@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+/* ============================================================
+   デザイントークン（暖色系モダンテーマ）
+   ============================================================ */
+:root {
+  /* ベース */
+  --bg-base:     #FAF7F2; /* ページ背景（温クリーム）*/
+  --bg-card:     #FFFEFB; /* カード背景 */
+  --bg-muted:    #F3EDE4; /* 薄いベージュ */
+
+  /* テキスト */
+  --tx-primary:  #2C1A0E; /* メインテキスト（温ダークブラウン）*/
+  --tx-secondary:#7A6555; /* サブテキスト */
+  --tx-muted:    #B0A090; /* 補助テキスト */
+
+  /* アクセント（テラコッタ）*/
+  --ac-base:     #B5714A; /* primary ボタン */
+  --ac-dark:     #9A5C38; /* hover */
+  --ac-light:    #F5E8DD; /* 薄いアクセント背景 */
+  --ac-text:     #7A3E1E; /* アクセントテキスト */
+
+  /* ボーダー */
+  --bd-base:     #E8DDD2; /* 通常ボーダー */
+  --bd-muted:    #F0E9E0; /* 薄いボーダー */
+}
+
+@theme inline {
+  --color-bg-base:     var(--bg-base);
+  --color-bg-card:     var(--bg-card);
+  --color-bg-muted:    var(--bg-muted);
+  --color-tx-primary:  var(--tx-primary);
+  --color-tx-secondary:var(--tx-secondary);
+  --color-tx-muted:    var(--tx-muted);
+  --color-ac-base:     var(--ac-base);
+  --color-ac-dark:     var(--ac-dark);
+  --color-ac-light:    var(--ac-light);
+  --color-ac-text:     var(--ac-text);
+  --color-bd-base:     var(--bd-base);
+  --color-bd-muted:    var(--bd-muted);
+}
+
+html, body { height: 100%; }
+
+body {
+  background: #EDE6DB; /* ウィンドウ外のグレー */
+  color: var(--tx-primary);
+  font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+    Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* スクロールバー非表示 */
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
