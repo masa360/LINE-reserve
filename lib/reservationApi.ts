@@ -78,6 +78,7 @@ export async function createReservationOnGas(params: {
   time: string;
   notes: string;
   lineUserId?: string;
+  lineDisplayName?: string;
 }): Promise<{ success: boolean; error?: string; assignedStaffName?: string; eventId?: string }> {
   const { ok, data } = await callReservationApi<CreateReservationApiResponse>({
     action: 'createReservation',
@@ -91,6 +92,7 @@ export async function createReservationOnGas(params: {
     time: params.time,
     notes: params.notes,
     lineUserId: params.lineUserId ?? '',
+    lineDisplayName: params.lineDisplayName ?? '',
   });
 
   if (ok && data.success) {

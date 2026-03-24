@@ -147,3 +147,90 @@ Googleのウェブアプリは、環境によって **ブラウザからの `fet
 接続に失敗したときは、時間選択画面に **黄色い注意** が出てダミー枠にフォールバックします。
 
 これで **ブラウザのCORS** を気にせず呼べます。
+
+---
+
+## Messaging API（Gemini＝分類器／シート＝回答）を同時運用する
+
+この `Code.gs` は、次の2種類のPOSTを自動判別します。
+
+- 予約API: `{"action":"getAvailability" ... }` など
+- LINE Webhook: `{"events":[ ... ]}`
+
+つまり、**同じWebアプリURLで予約APIとMessaging APIを併用**できます。
+
+### 返答の考え方（憶測で店舗案内を書かない）
+
+- **Gemini** は「ユーザーが何の用件か」を **`intentId` 1つ** に分類するだけ（質問分類器）。
+- **実際にユーザーに送る文章**は、必ず **`ChatRules` の `replyText` 列**（＋ `{{KNOW:…}}` 置換）から取得します。
+- Gemini が `NONE` を返した・API失敗・キー未設定のときは、**キーワード列の部分一致**にフォールバックします。
+
+### 追加で必要なスクリプトプロパティ
+
+| プロパティ | 必須 | 用途 |
+|-----------|------|------|
+| `LINE_ACCESS_TOKEN` | ✅ | Messaging APIのチャネルアクセストークン（長期） |
+| `MEMBER_PHOTO_DRIVE_FOLDER_ID` | ✅（写真運用時） | 会員証写真の保存先Google DriveフォルダID |
+| `GEMINI_API_KEY` | 推奨 | 分類器として利用（未設定時はキーワード一致のみ） |
+| `GEMINI_MODEL` | 任意 | 例: `gemini-1.5-flash`（未設定時は `gemini-1.5-flash`） |
+| `LINE_USE_GEMINI_CLASSIFIER` | 任意 | `FALSE` のとき、キーワード一致のみ（APIキーがあっても分類に使わない） |
+| `ADMIN_LINE_ID` | 任意 | `ChatRules` の `alertStaff` が TRUE のとき、スタッフへ Push 通知 |
+| `CHAT_FALLBACK_REPLY` | 任意 | 分類もキーワードも当たらないときの定型文（未設定時はコード内デフォルト） |
+
+### シート構成（自動作成）
+
+GASエディタで `setupLineQaSheets` を1回実行すると作られます（サンプル行付き）。
+
+| シート | 内容 |
+|--------|------|
+| `ChatRules` | **優先度**・**intentId（分類のID・一意推奨）**・**keywords（店主用キーワード群。Geminiのヒントにも使う）**・**replyText（返答本文）**・`onlyWhenStep`・`nextStep`・`alertStaff` |
+| `ChatState` | ユーザーごとの現在ステップ（チャットフロー用） |
+| `Knowledge` | `key` / `rule`。返答に `{{KNOW:キー}}` と書くと `rule` に置換 |
+| `Customer` | 顧客名・メモ（手運用・将来拡張用） |
+| `Log` | 会話ログ（横持ち） |
+| `ErrorLog` | 失敗イベント |
+| `MemberPhotoLog` | 会員証写真の保存ログ（LINE userId、保存日、失効日、Drive File ID） |
+
+#### `ChatRules` 列の意味
+
+- **intentId**: Gemini が返す ID。**英数字とアンダースコア推奨**。同じステップ内で重複しないようにしてください。
+- **keywords**: 例 `予約したい,枠,空いてるか` のように書くと、**分類プロンプトに「店主の意図のヒント」として載り**、言い換えにも強くなります。フォールバック時は従来どおり **部分一致** にも使います。
+- **replyText**: LINE に送る本文（ここに書いたもの以外は、モデルが勝手に生成しません）。
+- **priority**: キーワード **フォールバック** のとき、小さい行から評価。
+- **onlyWhenStep** / **nextStep** / **alertStaff**: 従来どおり（ステップ付きフロー・スタッフ通知）。
+
+初期ステップは **`START`** です。
+
+### LINE Developers 側設定
+
+1. 対象チャネルで **Messaging API** を有効化
+2. Webhook URL に `https://script.google.com/macros/s/.../exec` を設定
+3. 「Webhookの利用」をON
+4. 「検証」実行で200が返ることを確認
+
+### 動作イメージ
+
+1. ユーザーがテキスト送信
+2. `GEMINI_API_KEY` があり無効化されていなければ、**現在ステップで有効な行**の `intentId` と `keywords` を一覧にして Gemini に渡し、**JSON で `intentId` だけ**返させる
+3. 返ってきた `intentId` に対応する行の **`replyText`** を送る（`{{KNOW:…}}` を置換）
+4. `NONE`・パース失敗・該当行なしのときは、**キーワード部分一致**で再度ルール探索
+5. それでも無ければ **フォールバック定型文**
+6. `alertStaff` / `nextStep` / `Log` は従来どおり
+
+---
+
+## 会員証写真（LINE画像 -> Drive保存）
+
+お客様がLINEトークで画像を送ると、`lineUserId` に紐づけてGoogle Driveへ保存します。
+
+- 保存上限: **1ユーザーあたり直近1年で4枚**
+- 保持期間: **1年（365日）**
+- 保存時に `MemberPhotoLog` に記録
+- 期限切れは次回画像受信時に自動クリーンアップ（Driveファイルをゴミ箱へ移動し、`status=EXPIRED`）
+- 保存先は `MEMBER_PHOTO_DRIVE_FOLDER_ID` で指定した親フォルダ配下に、`lineUserId_表示名` のユーザーフォルダを自動作成
+
+### 運用メモ
+
+- スタッフ操作は不要です。お客様が店内/自宅どちらで撮って送っても保存されます。
+- 写真は `MEMBER_PHOTO_DRIVE_FOLDER_ID` で指定したフォルダに保存されます。
+- LINE上の「送信者=会員本人」のため、紐づけは自動です。
