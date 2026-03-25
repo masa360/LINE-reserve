@@ -1089,6 +1089,11 @@ function handleMemberCardImage_(event, userId) {
 /**
  * メモリー一覧（LIFF用・新しい順）
  */
+/**
+ * MemberPhotoLog の行形式:
+ * - 新10列: userId, displayName, savedAt, expiresAt, fileId, name, viewUrl, thumb, msgId, status(列J)
+ * - 旧8列: userId, savedAt, expiresAt, fileId, name, driveLink, msgId, status(列H)
+ */
 function getMemberPhotosForUser_(userId) {
   var ssId = getSpreadsheetId_();
   if (!ssId) return [];
@@ -1103,15 +1108,42 @@ function getMemberPhotosForUser_(userId) {
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
     if (String(row[0] || '') !== userId) continue;
-    if (String(row[9] || '') !== 'ACTIVE') continue;
-    var expiresAt = parseSheetDateTime_(row[3]);
-    if (expiresAt && expiresAt.getTime() <= now) continue;
+
+    var isNew = String(row[9] || '') === 'ACTIVE';
+    var isLegacy = !isNew && String(row[7] || '') === 'ACTIVE';
+    if (!isNew && !isLegacy) continue;
+
+    var expiresAt;
+    var savedAt;
+    var fileId;
+    var viewUrl;
+    var thumbUrl;
+
+    if (isNew) {
+      expiresAt = parseSheetDateTime_(row[3]);
+      if (expiresAt && expiresAt.getTime() <= now) continue;
+      savedAt = String(row[2] || '');
+      fileId = String(row[4] || '');
+      viewUrl = String(row[6] || '');
+      thumbUrl = String(row[7] || '');
+    } else {
+      expiresAt = parseSheetDateTime_(row[2]);
+      if (expiresAt && expiresAt.getTime() <= now) continue;
+      savedAt = String(row[1] || '');
+      fileId = String(row[3] || '');
+      viewUrl = String(row[5] || '');
+      thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w800';
+    }
+
+    if (!thumbUrl && fileId) {
+      thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w800';
+    }
 
     results.push({
-      savedAt: String(row[2] || ''),
-      fileId: String(row[4] || ''),
-      viewUrl: String(row[6] || ''),
-      thumbnailUrl: String(row[7] || ('https://drive.google.com/thumbnail?id=' + row[4] + '&sz=w800')),
+      savedAt: savedAt,
+      fileId: fileId,
+      viewUrl: viewUrl,
+      thumbnailUrl: thumbUrl,
     });
   }
 
@@ -1119,6 +1151,20 @@ function getMemberPhotosForUser_(userId) {
     return a.savedAt < b.savedAt ? 1 : a.savedAt > b.savedAt ? -1 : 0;
   });
   return results;
+}
+
+/**
+ * MemoryPage.html（LIFF）から google.script.run で呼ぶ（fetch/CORS を避ける）
+ */
+function memoryPageGetPhotos(lineUserId) {
+  try {
+    var uid = String(lineUserId || '').trim();
+    if (!uid) return { success: false, error: 'lineUserId が必要です' };
+    var photos = getMemberPhotosForUser_(uid);
+    return { success: true, photos: photos };
+  } catch (e) {
+    return { success: false, error: e.message || String(e) };
+  }
 }
 
 function getMemberPhotoFolder_() {

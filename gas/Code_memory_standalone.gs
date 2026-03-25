@@ -146,6 +146,17 @@ function getPhotosByUser_(userId) {
   return rows;
 }
 
+/** MemoryPage.html から google.script.run 用 */
+function memoryPageGetPhotos(lineUserId) {
+  try {
+    var uid = String(lineUserId || '').trim();
+    if (!uid) return { success: false, error: 'lineUserId が必要です' };
+    return { success: true, photos: getPhotosByUser_(uid) };
+  } catch (e) {
+    return { success: false, error: e.message || String(e) };
+  }
+}
+
 function setupMemorySheet_() {
   getOrCreatePhotoSheet_();
 }
