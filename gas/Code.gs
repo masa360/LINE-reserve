@@ -9,6 +9,7 @@
  * - （任意）スプレッドシートに予約ログを追記
  * - 空き状況API（スタッフ別・指名なし対応）
  * - LINE Webhook: Gemini は質問分類のみ。返答本文はスプレッドシートの定型文（憶測で店舗案内を生成しない）
+ * - メモリー: 画像をDriveへ保存し、同じGASの MemoryPage.html でLIFF表示（Webhook・トークンは共通）
  *
  * デプロイ: 「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」
  *   次のユーザーとして実行: 自分
@@ -52,7 +53,37 @@ var STAFF_IDS = {
  * （テスト用。本番は POST 推奨）
  */
 function doGet(e) {
-  return handleRequest_(e && e.parameter, null);
+  var p = (e && e.parameter) || {};
+  /**
+   * メモリー履歴API（LIFF内 fetch 用）
+   * GET ?action=photos&lineUserId=Uxxxx
+   */
+  if (p.action === 'photos') {
+    var lineUserId = String(p.lineUserId || '');
+    if (!lineUserId) {
+      return jsonResponse_(400, { success: false, error: 'lineUserId が必要です' });
+    }
+    try {
+      var photos = getMemberPhotosForUser_(lineUserId);
+      return jsonResponse_(200, { success: true, photos: photos });
+    } catch (err) {
+      return jsonResponse_(500, { success: false, error: err.message || String(err) });
+    }
+  }
+  /**
+   * action なし → メモリーLIFF画面（LINE Developers のエンドポイントにこの /exec を指定）
+   * action あり → 予約API（getAvailability 等）
+   */
+  if (!p.action) {
+    var template = HtmlService.createTemplateFromFile('MemoryPage');
+    template.liffId = String(PropertiesService.getScriptProperties().getProperty('MEMORY_LIFF_ID') || '');
+    template.webAppUrl = ScriptApp.getService().getUrl();
+    return template
+      .evaluate()
+      .setTitle('メモリー')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+  return handleRequest_(p, null);
 }
 
 /**
@@ -503,6 +534,11 @@ var CHAT_DEFAULT_STEP = 'START';
 var CHAT_FALLBACK_DEFAULT =
   '該当する定型案内が見つかりませんでした。担当者が内容を確認し、順番にご返信します。お急ぎの場合はお電話でお問い合わせください。';
 
+/** メモリー写真: 1ユーザーあたり直近1年での保持枚数上限 */
+var MEMBER_PHOTO_MAX_PER_YEAR = 4;
+/** メモリー写真: 保持日数 */
+var MEMBER_PHOTO_RETENTION_DAYS = 365;
+
 
 function handleLineWebhook_(payload) {
   var events = payload.events || [];
@@ -523,6 +559,13 @@ function handleLineEvent_(event) {
   var replyToken = event.replyToken;
   var userId = event.source && event.source.userId ? event.source.userId : '';
   if (!replyToken || !userId) return;
+
+  if (messageType === 'image') {
+    var imageReply = handleMemberCardImage_(event, userId);
+    lineReplyText_(replyToken, imageReply);
+    saveQaLogHorizontally_(userId, '【画像送信】', imageReply);
+    return;
+  }
 
   if (messageType !== 'text') return;
   var userMessage = String(event.message.text || '').trim();
@@ -961,7 +1004,201 @@ function linePushText_(toUserId, text) {
   });
 }
 
-/* ---- メモリー機能は memory-standalone リポジトリへ移動済み ---- */
+/**
+ * LINE画像をメモリーとしてDriveへ保存（Webhook共通・LINE_ACCESS_TOKEN使用）
+ * スクリプトプロパティ: MEMBER_PHOTO_DRIVE_FOLDER_ID（必須）
+ */
+function handleMemberCardImage_(event, userId) {
+  var messageId = event && event.message ? String(event.message.id || '') : '';
+  if (!messageId) return '画像IDを取得できませんでした。時間をおいて再送してください。';
+
+  try {
+    var photoSheet = qaGetOrCreateSheet_('MemberPhotoLog', [
+      'lineUserId',
+      'lineDisplayName',
+      'savedAt',
+      'expiresAt',
+      'driveFileId',
+      'driveFileName',
+      'driveViewUrl',
+      'thumbnailUrl',
+      'lineMessageId',
+      'status',
+    ]);
+
+    cleanupExpiredMemberPhotos_(photoSheet);
+
+    var currentCount = countActiveMemberPhotosInLastYear_(photoSheet, userId);
+    if (currentCount >= MEMBER_PHOTO_MAX_PER_YEAR) {
+      return (
+        '保存上限に達しています。メモリー写真は1年で最大' +
+        MEMBER_PHOTO_MAX_PER_YEAR +
+        '枚まで保存できます。'
+      );
+    }
+
+    var blob = lineGetMessageContentBlob_(messageId);
+    if (!blob) {
+      return '画像の取得に失敗しました。時間をおいて再送してください。';
+    }
+
+    var userDisplayName = qaGetLineDisplayName_(userId);
+    var folder = getOrCreateMemberPhotoUserFolder_(userId, userDisplayName);
+    var savedAt = new Date();
+    var expiresAt = new Date(savedAt.getTime() + MEMBER_PHOTO_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    var timestamp = Utilities.formatDate(savedAt, TZ, 'yyyyMMdd-HHmmss');
+    var fileName = 'memory-' + userId + '-' + timestamp + '.jpg';
+    blob.setName(fileName);
+
+    var file = folder.createFile(blob);
+    file.setName(fileName);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var thumbnailUrl = 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w800';
+    var viewUrl = 'https://drive.google.com/file/d/' + file.getId() + '/view';
+
+    photoSheet.appendRow([
+      userId,
+      userDisplayName,
+      Utilities.formatDate(savedAt, TZ, 'yyyy/MM/dd HH:mm:ss'),
+      Utilities.formatDate(expiresAt, TZ, 'yyyy/MM/dd HH:mm:ss'),
+      file.getId(),
+      file.getName(),
+      viewUrl,
+      thumbnailUrl,
+      messageId,
+      'ACTIVE',
+    ]);
+
+    var remain = MEMBER_PHOTO_MAX_PER_YEAR - (currentCount + 1);
+    return (
+      '写真をメモリーに保存しました。\n' +
+      '保存日: ' +
+      Utilities.formatDate(savedAt, TZ, 'yyyy/MM/dd') +
+      '\n有効期限: ' +
+      Utilities.formatDate(expiresAt, TZ, 'yyyy/MM/dd') +
+      '\n残り保存可能枚数(直近1年): ' +
+      remain +
+      '枚\nリッチメニュー「メモリー」から履歴を確認できます。'
+    );
+  } catch (err) {
+    logLineError_(event, err);
+    return '画像の保存中にエラーが発生しました。時間をおいて再送してください。';
+  }
+}
+
+/**
+ * メモリー一覧（LIFF用・新しい順）
+ */
+function getMemberPhotosForUser_(userId) {
+  var ssId = getSpreadsheetId_();
+  if (!ssId) return [];
+  var ss = SpreadsheetApp.openById(ssId);
+  var sheet = ss.getSheetByName('MemberPhotoLog');
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  var data = sheet.getDataRange().getValues();
+  var now = new Date().getTime();
+  var results = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (String(row[0] || '') !== userId) continue;
+    if (String(row[9] || '') !== 'ACTIVE') continue;
+    var expiresAt = parseSheetDateTime_(row[3]);
+    if (expiresAt && expiresAt.getTime() <= now) continue;
+
+    results.push({
+      savedAt: String(row[2] || ''),
+      fileId: String(row[4] || ''),
+      viewUrl: String(row[6] || ''),
+      thumbnailUrl: String(row[7] || ('https://drive.google.com/thumbnail?id=' + row[4] + '&sz=w800')),
+    });
+  }
+
+  results.sort(function (a, b) {
+    return a.savedAt < b.savedAt ? 1 : a.savedAt > b.savedAt ? -1 : 0;
+  });
+  return results;
+}
+
+function getMemberPhotoFolder_() {
+  var folderId = getScriptProp_('MEMBER_PHOTO_DRIVE_FOLDER_ID', true);
+  return DriveApp.getFolderById(folderId);
+}
+
+function getOrCreateMemberPhotoUserFolder_(userId, displayName) {
+  var parent = getMemberPhotoFolder_();
+  var safeName = sanitizeDriveFolderName_(displayName || 'no-name');
+  var folderName = String(userId || 'unknown-user') + '_' + safeName;
+  var it = parent.getFoldersByName(folderName);
+  if (it.hasNext()) return it.next();
+  return parent.createFolder(folderName);
+}
+
+function sanitizeDriveFolderName_(name) {
+  var s = String(name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+  if (!s) return 'no-name';
+  return s;
+}
+
+function lineGetMessageContentBlob_(messageId) {
+  var token = getScriptProp_('LINE_ACCESS_TOKEN', true);
+  var res = UrlFetchApp.fetch('https://api-data.line.me/v2/bot/message/' + messageId + '/content', {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) return null;
+  return res.getBlob();
+}
+
+function countActiveMemberPhotosInLastYear_(sheet, userId) {
+  var data = sheet.getDataRange().getValues();
+  var now = new Date().getTime();
+  var from = now - MEMBER_PHOTO_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  var count = 0;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '') !== String(userId)) continue;
+    if (String(data[i][9] || '') !== 'ACTIVE') continue;
+    var savedAt = parseSheetDateTime_(data[i][2]);
+    if (!savedAt) continue;
+    var t = savedAt.getTime();
+    if (t >= from && t <= now) count++;
+  }
+  return count;
+}
+
+function cleanupExpiredMemberPhotos_(sheet) {
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return;
+  var now = new Date().getTime();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][9] || '') !== 'ACTIVE') continue;
+    var expiresAt = parseSheetDateTime_(data[i][3]);
+    if (!expiresAt || expiresAt.getTime() > now) continue;
+
+    var fileId = String(data[i][4] || '');
+    if (fileId) {
+      try {
+        DriveApp.getFileById(fileId).setTrashed(true);
+      } catch (e) {
+        // 手動削除済みでも継続
+      }
+    }
+    sheet.getRange(i + 1, 10).setValue('EXPIRED');
+  }
+}
+
+function parseSheetDateTime_(value) {
+  if (!value) return null;
+  if (Object.prototype.toString.call(value) === '[object Date]') return value;
+  var s = String(value).trim();
+  if (!s) return null;
+  var normalized = s.replace(/\//g, '-');
+  var d = new Date(normalized);
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
 
 function qaGetSpreadsheet_() {
   var ssId = getSpreadsheetId_();
@@ -1097,6 +1334,18 @@ function setupLineQaSheets() {
   qaGetOrCreateSheet_('ChatState', ['userId', 'step', 'updatedAt']);
   qaGetOrCreateSheet_('Log', ['userId', 'name', 'timestamp', 'userMessage', 'aiResponse']);
   qaGetOrCreateSheet_('ErrorLog', ['timestamp', 'event', 'error']);
+  qaGetOrCreateSheet_('MemberPhotoLog', [
+    'lineUserId',
+    'lineDisplayName',
+    'savedAt',
+    'expiresAt',
+    'driveFileId',
+    'driveFileName',
+    'driveViewUrl',
+    'thumbnailUrl',
+    'lineMessageId',
+    'status',
+  ]);
   var ss = qaGetSpreadsheet_();
   if (know.getLastRow() <= 1) {
     know.appendRow(['営業時間', '10:00〜20:00（※この行はサンプルです。実店舗の時間に書き換えてください）']);
