@@ -177,26 +177,64 @@
           const p = await liff.getProfile();
           setMeta(`${p.displayName} さんの履歴`);
 
-          google.script.run
-            .withSuccessHandler(function (data) {
-              if (!data || !data.success) {
-                renderError((data && data.error) || '取得失敗');
-                return;
-              }
-              const photos = data.photos || [];
-              const count = document.getElementById('count');
-              count.style.display = 'inline-block';
-              count.textContent = photos.length + '枚';
-              if (photos.length === 0) {
-                renderEmpty();
-                return;
-              }
-              renderPhotos(photos);
-            })
-            .withFailureHandler(function (err) {
-              renderError(err && err.message ? err.message : String(err));
-            })
-            .memoryPageGetPhotos(p.userId);
+          function applyPhotosData(data) {
+            if (!data || !data.success) {
+              renderError((data && data.error) || '取得失敗');
+              return;
+            }
+            const photos = data.photos || [];
+            const count = document.getElementById('count');
+            count.style.display = 'inline-block';
+            count.textContent = photos.length + '枚';
+            if (photos.length === 0) {
+              renderEmpty();
+              return;
+            }
+            renderPhotos(photos);
+          }
+
+          const apiBase = window.location.href.split('?')[0];
+          let fetchErrMsg = '';
+          try {
+            const ctrl = new AbortController();
+            const tid = setTimeout(function () {
+              ctrl.abort();
+            }, 12000);
+            const res = await fetch(
+              apiBase +
+                '?action=photos&lineUserId=' +
+                encodeURIComponent(p.userId),
+              { method: 'GET', signal: ctrl.signal }
+            );
+            clearTimeout(tid);
+            const text = await res.text();
+            let data;
+            try {
+              data = JSON.parse(text);
+            } catch (parseE) {
+              renderError('応答がJSONではありません。デプロイURLを確認してください。');
+              return;
+            }
+            applyPhotosData(data);
+            return;
+          } catch (e) {
+            fetchErrMsg = e && e.message ? e.message : String(e);
+          }
+
+          if (typeof google !== 'undefined' && google.script && google.script.run) {
+            google.script.run
+              .withSuccessHandler(applyPhotosData)
+              .withFailureHandler(function (err) {
+                const gmsg = err && err.message ? err.message : String(err);
+                renderError(
+                  '通信1: ' + fetchErrMsg + '\n通信2(google.script.run): ' + gmsg
+                );
+              })
+              .memoryPageGetPhotos(p.userId);
+            return;
+          }
+
+          renderError(fetchErrMsg || '写真一覧を取得できませんでした');
         } catch (e) {
           renderError(e && e.message ? e.message : String(e));
         }

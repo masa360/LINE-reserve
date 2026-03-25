@@ -1088,13 +1088,21 @@ function handleMemberCardImage_(event, userId) {
 
 /**
  * メモリー一覧（LIFF用・新しい順）
- */
-/**
+ *
  * MemberPhotoLog の行形式:
  * - 新10列: userId, displayName, savedAt, expiresAt, fileId, name, viewUrl, thumb, msgId, status(列J)
  * - 旧8列: userId, savedAt, expiresAt, fileId, name, driveLink, msgId, status(列H)
  */
+function memberPhotoStatus_(cell) {
+  return String(cell || '')
+    .trim()
+    .toUpperCase();
+}
+
 function getMemberPhotosForUser_(userId) {
+  var uid = String(userId || '').trim();
+  if (!uid) return [];
+
   var ssId = getSpreadsheetId_();
   if (!ssId) return [];
   var ss = SpreadsheetApp.openById(ssId);
@@ -1107,10 +1115,12 @@ function getMemberPhotosForUser_(userId) {
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    if (String(row[0] || '') !== userId) continue;
+    if (String(row[0] || '').trim() !== uid) continue;
 
-    var isNew = String(row[9] || '') === 'ACTIVE';
-    var isLegacy = !isNew && String(row[7] || '') === 'ACTIVE';
+    var st9 = memberPhotoStatus_(row[9]);
+    var st7 = memberPhotoStatus_(row[7]);
+    var isNew = st9 === 'ACTIVE';
+    var isLegacy = !isNew && st7 === 'ACTIVE';
     if (!isNew && !isLegacy) continue;
 
     var expiresAt;
