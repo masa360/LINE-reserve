@@ -8,6 +8,8 @@
  * - Googleカレンダーに予約を登録
  * - （任意）スプレッドシートに予約ログを追記
  * - 空き状況API（スタッフ別・指名なし対応）
+ * - LINE Webhook: Gemini は質問分類のみ。返答本文はスプレッドシートの定型文（憶測で店舗案内を生成しない）
+ * - メモリー: 画像をDriveへ保存し、同じGASの MemoryPage.html でLIFF表示（Webhook・トークンは共通）
  *
  * デプロイ: 「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」
  *   次のユーザーとして実行: 自分
@@ -51,7 +53,37 @@ var STAFF_IDS = {
  * （テスト用。本番は POST 推奨）
  */
 function doGet(e) {
-  return handleRequest_(e && e.parameter, null);
+  var p = (e && e.parameter) || {};
+  /**
+   * メモリー履歴API（LIFF内 fetch 用）
+   * GET ?action=photos&lineUserId=Uxxxx
+   */
+  if (p.action === 'photos') {
+    var lineUserId = String(p.lineUserId || '');
+    if (!lineUserId) {
+      return jsonResponse_(400, { success: false, error: 'lineUserId が必要です' });
+    }
+    try {
+      var photos = getMemberPhotosForUser_(lineUserId);
+      return jsonResponse_(200, { success: true, photos: photos });
+    } catch (err) {
+      return jsonResponse_(500, { success: false, error: err.message || String(err) });
+    }
+  }
+  /**
+   * action なし → メモリーLIFF画面（LINE Developers のエンドポイントにこの /exec を指定）
+   * action あり → 予約API（getAvailability 等）
+   */
+  if (!p.action) {
+    var template = HtmlService.createTemplateFromFile('MemoryPage');
+    template.liffId = String(PropertiesService.getScriptProperties().getProperty('MEMORY_LIFF_ID') || '');
+    template.webAppUrl = ScriptApp.getService().getUrl();
+    return template
+      .evaluate()
+      .setTitle('メモリー')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+  return handleRequest_(p, null);
 }
 
 /**
@@ -66,6 +98,13 @@ function doPost(e) {
   } catch (err) {
     return jsonResponse_(400, { success: false, error: 'JSONの解析に失敗しました' });
   }
+
+  // LINE Messaging API のWebhook（events配列がある）なら別処理
+  if (payload && payload.events && Object.prototype.toString.call(payload.events) === '[object Array]') {
+    return handleLineWebhook_(payload);
+  }
+
+  // それ以外は予約API
   return handleRequest_(e && e.parameter, payload);
 }
 
@@ -272,6 +311,8 @@ function extractStaffId_(ev) {
 function createReservation_(body) {
   var calendar = getCalendar_();
 
+  var lineUserId = body.lineUserId || '';
+  var lineDisplayName = resolveReservationLineDisplayName_(lineUserId, body.lineDisplayName || '');
   var customerName = body.customerName || '';
   var menuName = body.menuName || '';
   var durationMinutes = parseInt(body.durationMinutes || '60', 10);
@@ -281,7 +322,6 @@ function createReservation_(body) {
   var dateStr = body.date;
   var timeStr = body.time;
   var notes = body.notes || '';
-  var lineUserId = body.lineUserId || '';
 
   if (!dateStr || !timeStr || !menuName) {
     throw new Error('date, time, menuName は必須です');
@@ -321,6 +361,7 @@ function createReservation_(body) {
     price: price,
     notes: notes,
     lineUserId: lineUserId,
+    lineDisplayName: lineDisplayName,
     durationMinutes: durationMinutes,
   });
 
@@ -338,6 +379,7 @@ function createReservation_(body) {
     price: price,
     notes: notes,
     lineUserId: lineUserId,
+    lineDisplayName: lineDisplayName,
   });
 
   return {
@@ -346,6 +388,20 @@ function createReservation_(body) {
     assignedStaffId: assignedStaffId,
     assignedStaffName: assignedStaffName,
   };
+}
+
+/**
+ * 予約ログ用の LINE表示名を決定する。
+ * - フロントから受けた lineDisplayName を優先
+ * - 無い場合で lineUserId があるときは Messaging API で取得
+ */
+function resolveReservationLineDisplayName_(lineUserId, rawLineDisplayName) {
+  var fromClient = String(rawLineDisplayName || '').trim();
+  if (fromClient) return fromClient;
+  if (!lineUserId) return '';
+  var displayName = qaGetLineDisplayName_(lineUserId);
+  if (!displayName || displayName === '未登録' || displayName === '名前未取得') return '';
+  return displayName;
 }
 
 function pickAvailableStaff_(events, rangeStart, rangeEnd) {
@@ -388,6 +444,7 @@ function buildDescription_(data) {
     'durationMinutes:' + data.durationMinutes,
     'notes:' + data.notes,
     'lineUserId:' + data.lineUserId,
+    'lineDisplayName:' + (data.lineDisplayName || ''),
   ];
   return lines.join('\n');
 }
@@ -415,6 +472,7 @@ function appendToSpreadsheet_(row) {
     row.price,
     row.notes,
     row.lineUserId,
+    row.lineDisplayName || '',
   ]);
 }
 
@@ -447,7 +505,7 @@ function setupSpreadsheetHeader() {
     throw new Error('SPREADSHEET_ID が未設定です');
   }
   var sheet = SpreadsheetApp.openById(ssId).getSheets()[0];
-  sheet.getRange(1, 1, 1, 11).setValues([
+  sheet.getRange(1, 1, 1, 12).setValues([
     [
       '作成日時',
       'イベントID',
@@ -460,6 +518,1012 @@ function setupSpreadsheetHeader() {
       '料金',
       'ご要望',
       'LINEユーザーID',
+      'LINE表示名',
     ],
   ]);
+}
+
+// ------------------------------------------------------------
+// LINE Messaging API（Gemini=分類器 / シート=回答本文 + スプレッドシートログ）
+// ------------------------------------------------------------
+
+/** チャットフローの初期ステップID（ChatState / ChatRules の onlyWhenStep と対応） */
+var CHAT_DEFAULT_STEP = 'START';
+
+/** どのルールにも当てはまらないときの返答（スクリプトプロパティ CHAT_FALLBACK_REPLY で上書き可） */
+var CHAT_FALLBACK_DEFAULT =
+  '該当する定型案内が見つかりませんでした。担当者が内容を確認し、順番にご返信します。お急ぎの場合はお電話でお問い合わせください。';
+
+/** メモリー写真: 1ユーザーあたり直近1年での保持枚数上限 */
+var MEMBER_PHOTO_MAX_PER_YEAR = 4;
+/** メモリー写真: 保持日数 */
+var MEMBER_PHOTO_RETENTION_DAYS = 365;
+
+
+function handleLineWebhook_(payload) {
+  var events = payload.events || [];
+  for (var i = 0; i < events.length; i++) {
+    try {
+      handleLineEvent_(events[i]);
+    } catch (err) {
+      // 1イベント単位で失敗しても全体は継続
+      logLineError_(events[i], err);
+    }
+  }
+  return textResponse_('ok');
+}
+
+function handleLineEvent_(event) {
+  if (!event || event.type !== 'message' || !event.message) return;
+  var messageType = event.message.type;
+  var replyToken = event.replyToken;
+  var userId = event.source && event.source.userId ? event.source.userId : '';
+  if (!replyToken || !userId) return;
+
+  if (messageType === 'image') {
+    var imageReply = handleMemberCardImage_(event, userId);
+    lineReplyText_(replyToken, imageReply);
+    saveQaLogHorizontally_(userId, '【画像送信】', imageReply);
+    return;
+  }
+
+  if (messageType !== 'text') return;
+  var userMessage = String(event.message.text || '').trim();
+  if (!userMessage) return;
+
+  var customerInfo = getQaCustomerInfo_(userId);
+  var currentStep = getChatStateStep_(userId);
+  var matchResult = chatResolveRule_(userMessage, currentStep);
+
+  var finalText = '';
+  var matchedIntent = '';
+
+  if (matchResult) {
+    matchedIntent = matchResult.intentId || '';
+    finalText = resolveChatReplyPlaceholders_(String(matchResult.replyText || '').trim());
+    if (matchResult.alertStaff) {
+      sendQaAlertToStaff_(customerInfo.name || '未登録ユーザー', userMessage, matchedIntent);
+    }
+    if (matchResult.nextStep) {
+      setChatStateStep_(userId, matchResult.nextStep);
+    }
+  } else {
+    finalText = getScriptProp_('CHAT_FALLBACK_REPLY', false) || CHAT_FALLBACK_DEFAULT;
+  }
+
+  if (!finalText) {
+    finalText = getScriptProp_('CHAT_FALLBACK_REPLY', false) || CHAT_FALLBACK_DEFAULT;
+  }
+
+  lineReplyText_(replyToken, finalText);
+  saveQaLogHorizontally_(userId, userMessage, finalText);
+}
+
+/**
+ * ① Gemini で intentId 分類（キーワード群を意訳・照合のヒントとして利用）
+ * ② 失敗時・未設定時は従来どおりキーワード部分一致
+ */
+function chatResolveRule_(userMessage, currentStep) {
+  var useGemini = chatShouldUseGeminiClassifier_();
+  if (useGemini) {
+    var forGemini = chatFilterRulesForClassifier_(chatReadChatRulesRows_(), currentStep);
+    if (forGemini.length > 0) {
+      var classified = chatClassifyIntentWithGemini_(userMessage, currentStep, forGemini);
+      if (classified && classified !== 'NONE') {
+        var byIntent = chatMatchRuleByIntentId_(classified, currentStep);
+        if (byIntent) return byIntent;
+      }
+    }
+  }
+  return chatMatchRule_(userMessage, currentStep);
+}
+
+/** スクリプトプロパティ LINE_USE_GEMINI_CLASSIFIER が FALSE でなければ、GEMINI_API_KEY があるとき分類に使う */
+function chatShouldUseGeminiClassifier_() {
+  var apiKey = getScriptProp_('GEMINI_API_KEY', false);
+  if (!apiKey || String(apiKey).trim() === '') return false;
+  var flag = getScriptProp_('LINE_USE_GEMINI_CLASSIFIER', false);
+  if (flag && String(flag).trim().toUpperCase() === 'FALSE') return false;
+  return true;
+}
+
+/**
+ * ChatRules をシートから読み、priority 昇順（同順位は行順）
+ */
+function chatReadChatRulesRows_() {
+  var sheet = qaGetOrCreateSheet_('ChatRules', [
+    'priority',
+    'intentId',
+    'keywords',
+    'replyText',
+    'onlyWhenStep',
+    'nextStep',
+    'alertStaff',
+  ]);
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return [];
+
+  var rows = [];
+  for (var r = 1; r < data.length; r++) {
+    var pr = parseInt(data[r][0], 10);
+    if (isNaN(pr)) pr = 9999;
+    rows.push({
+      rowIndex: r,
+      priority: pr,
+      intentId: String(data[r][1] || '').trim(),
+      keywordsCell: data[r][2],
+      replyText: data[r][3],
+      onlyWhenStep: String(data[r][4] || '').trim(),
+      nextStep: String(data[r][5] || '').trim(),
+      alertStaff: chatParseBool_(data[r][6]),
+    });
+  }
+  rows.sort(function (a, b) {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.rowIndex - b.rowIndex;
+  });
+  return rows;
+}
+
+/** 分類プロンプトに載せる行（ステップ一致・intentId 必須） */
+function chatFilterRulesForClassifier_(rows, currentStep) {
+  var step = String(currentStep || '').trim();
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var rule = rows[i];
+    if (!rule.intentId) continue;
+    if (rule.onlyWhenStep && rule.onlyWhenStep !== step) continue;
+    out.push(rule);
+  }
+  return out;
+}
+
+/** intentId が一致し、かつ現在ステップで有効な最初の行（優先度順） */
+function chatMatchRuleByIntentId_(intentId, currentStep) {
+  var id = String(intentId || '').trim();
+  if (!id) return null;
+  var step = String(currentStep || '').trim();
+  var rows = chatReadChatRulesRows_();
+  for (var i = 0; i < rows.length; i++) {
+    var rule = rows[i];
+    if (rule.intentId !== id) continue;
+    if (rule.onlyWhenStep && rule.onlyWhenStep !== step) continue;
+    return {
+      replyText: rule.replyText,
+      intentId: rule.intentId,
+      alertStaff: rule.alertStaff,
+      nextStep: rule.nextStep,
+    };
+  }
+  return null;
+}
+
+/**
+ * Gemini に JSON のみで intentId を返させ、パースする。失敗時は null。
+ */
+function chatClassifyIntentWithGemini_(userMessage, currentStep, rules) {
+  var lines = [];
+  for (var i = 0; i < rules.length; i++) {
+    var hint = String(rules[i].keywordsCell || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n/g, ' ')
+      .trim();
+    if (!hint) hint = '（キーワード列は空。intentId の意味から推測してよいが、返答文は生成しないこと）';
+    lines.push('- intentId: ' + rules[i].intentId + '\n  店主が登録したキーワード・類似表現のヒント: ' + hint);
+  }
+  var catalog = lines.join('\n');
+
+  var prompt =
+    'あなたは美容室LINEの「質問分類器」です。ユーザー発言の意図を、次の intentId のいずれか1つに割り当てます。\n' +
+    '\n【絶対禁止】\n' +
+    '- ユーザーへの返答文・挨拶・店舗情報の説明を書くこと\n' +
+    '- JSON 以外の文字を出力すること（前後に説明文や ``` を付けない）\n' +
+    '\n【出力形式】次のいずれか1行の JSON のみ:\n' +
+    '{"intentId":"<下記リストの intentId のいずれかと完全一致>"}\n' +
+    'または、どれにも明確に当てはまらない場合のみ:\n' +
+    '{"intentId":"NONE"}\n' +
+    '\n【現在の会話ステップ】' +
+    String(currentStep || '').trim() +
+    '\n\n【分類候補】\n' +
+    catalog +
+    '\n\n【ユーザー発言】\n' +
+    userMessage;
+
+  var raw = qaGeminiGenerateText_(prompt);
+  return chatParseIntentIdFromClassifierOutput_(raw, rules);
+}
+
+/**
+ * Gemini generateContent（テキスト1本返却）。失敗時は null。
+ */
+function qaGeminiGenerateText_(userPrompt) {
+  var apiKey = getScriptProp_('GEMINI_API_KEY', false);
+  if (!apiKey) return null;
+  var model = getScriptProp_('GEMINI_MODEL', false) || 'gemini-1.5-flash';
+  var url =
+    'https://generativelanguage.googleapis.com/v1beta/models/' +
+    model +
+    ':generateContent?key=' +
+    encodeURIComponent(apiKey);
+
+  var payload = {
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: userPrompt }],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 256,
+    },
+  };
+
+  var res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+
+  try {
+    var json = JSON.parse(res.getContentText());
+    if (json.error) return null;
+    var parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
+    if (!parts || !parts[0] || !parts[0].text) return null;
+    return parts[0].text;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * モデル出力から intentId を取り出し、候補リストに存在するものだけ通す。
+ */
+function chatParseIntentIdFromClassifierOutput_(rawText, rules) {
+  if (!rawText) return null;
+  var t = String(rawText).trim();
+  t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+
+  var intentId = null;
+  try {
+    var m = t.match(/\{[\s\S]*\}/);
+    if (m) {
+      var j = JSON.parse(m[0]);
+      if (j && j.intentId !== undefined && j.intentId !== null) {
+        intentId = String(j.intentId).trim();
+      }
+    }
+  } catch (e1) {
+    intentId = null;
+  }
+
+  if (!intentId) {
+    var rm = t.match(/"intentId"\s*:\s*"([^"]+)"/);
+    if (rm) intentId = rm[1].trim();
+  }
+
+  if (!intentId) return null;
+  if (intentId === 'NONE') return 'NONE';
+
+  for (var i = 0; i < rules.length; i++) {
+    if (rules[i].intentId === intentId) return intentId;
+  }
+  return null;
+}
+
+/**
+ * 比較用に文字列を正規化（前後空白除去・連続空白圧縮・英字小文字化）
+ */
+function normalizeChatText_(text) {
+  var s = String(text || '')
+    .replace(/[\s　]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return s;
+}
+
+/**
+ * キーワードを分割（カンマ・読点・縦棒）
+ */
+function splitChatKeywords_(cell) {
+  if (cell === null || cell === undefined) return [];
+  var raw = String(cell);
+  var parts = raw.split(/[,、｜|]/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var k = String(parts[i] || '').trim();
+    if (k) out.push(k);
+  }
+  return out;
+}
+
+/**
+ * Knowledge シートを key → rule のマップで取得（{{KNOW:キー}} 用）
+ */
+function qaGetKnowledgeMap_() {
+  var sheet = qaGetOrCreateSheet_('Knowledge', ['key', 'rule']);
+  var data = sheet.getDataRange().getValues();
+  var map = {};
+  for (var i = 1; i < data.length; i++) {
+    var key = String(data[i][0] || '').trim();
+    if (key) map[key] = String(data[i][1] || '');
+  }
+  return map;
+}
+
+/**
+ * 返答文内の {{KNOW:キー}} を Knowledge シートの rule に置換（未定義キーはプレースホルダごと削除＋ログ用に目印）
+ */
+function resolveChatReplyPlaceholders_(replyText) {
+  var know = qaGetKnowledgeMap_();
+  return String(replyText || '').replace(/\{\{KNOW:([^}]+)\}\}/g, function (_m, key) {
+    var k = String(key || '').trim();
+    if (know.hasOwnProperty(k) && know[k]) return know[k];
+    return '【要設定:Knowledgeのキー「' + k + '」】';
+  });
+}
+
+function getChatStateStep_(userId) {
+  if (!userId) return CHAT_DEFAULT_STEP;
+  var sheet = qaGetOrCreateSheet_('ChatState', ['userId', 'step', 'updatedAt']);
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === userId) {
+      var st = String(data[i][1] || '').trim();
+      return st || CHAT_DEFAULT_STEP;
+    }
+  }
+  return CHAT_DEFAULT_STEP;
+}
+
+function setChatStateStep_(userId, step) {
+  if (!userId) return;
+  var next = String(step || '').trim();
+  if (!next) next = CHAT_DEFAULT_STEP;
+  var sheet = qaGetOrCreateSheet_('ChatState', ['userId', 'step', 'updatedAt']);
+  var data = sheet.getDataRange().getValues();
+  var now = Utilities.formatDate(new Date(), TZ, 'yyyy/MM/dd HH:mm:ss');
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === userId) {
+      sheet.getRange(i + 1, 2, 1, 2).setValues([[next, now]]);
+      return;
+    }
+  }
+  sheet.appendRow([userId, next, now]);
+}
+
+/**
+ * ChatRules を優先度順に見て、キーワード部分一致の最初の1件を返す（Gemini 未使用・フォールバック用）。
+ * 戻り: { replyText, intentId, alertStaff, nextStep } または null
+ */
+function chatMatchRule_(userMessage, currentStep) {
+  var rows = chatReadChatRulesRows_();
+  if (rows.length === 0) return null;
+
+  var normUser = normalizeChatText_(userMessage);
+
+  for (var i = 0; i < rows.length; i++) {
+    var rule = rows[i];
+    if (rule.onlyWhenStep && rule.onlyWhenStep !== String(currentStep || '').trim()) {
+      continue;
+    }
+    var kws = splitChatKeywords_(rule.keywordsCell);
+    if (kws.length === 0) continue;
+
+    var hit = false;
+    for (var j = 0; j < kws.length; j++) {
+      var nk = normalizeChatText_(kws[j]);
+      if (nk && chatKeywordMatches_(normUser, nk)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) continue;
+
+    return {
+      replyText: rule.replyText,
+      intentId: rule.intentId,
+      alertStaff: rule.alertStaff,
+      nextStep: rule.nextStep,
+    };
+  }
+  return null;
+}
+
+function chatParseBool_(cell) {
+  if (cell === true) return true;
+  var s = String(cell || '')
+    .trim()
+    .toUpperCase();
+  return s === 'TRUE' || s === '1' || s === 'YES' || s === 'はい';
+}
+
+/**
+ * キーワードがユーザー文に含まれるか。1桁の数字だけのキーワードは「12」の中の「1」のような誤一致を避ける。
+ */
+function chatKeywordMatches_(normUser, normKw) {
+  if (!normKw || normUser.indexOf(normKw) === -1) return false;
+  if (/^\d$/.test(normKw)) {
+    var idx = 0;
+    while ((idx = normUser.indexOf(normKw, idx)) !== -1) {
+      var before = idx > 0 ? normUser.charAt(idx - 1) : ' ';
+      var after = idx + normKw.length < normUser.length ? normUser.charAt(idx + normKw.length) : ' ';
+      if (!/\d/.test(before) && !/\d/.test(after)) return true;
+      idx += 1;
+    }
+    return false;
+  }
+  return true;
+}
+
+function textResponse_(text) {
+  return ContentService.createTextOutput(text || 'ok');
+}
+
+function getScriptProp_(key, required) {
+  var val = PropertiesService.getScriptProperties().getProperty(key);
+  if (required && (!val || String(val).trim() === '')) {
+    throw new Error('スクリプトプロパティが未設定です: ' + key);
+  }
+  return val || '';
+}
+
+function lineReplyText_(replyToken, text) {
+  var token = getScriptProp_('LINE_ACCESS_TOKEN', true);
+  var payload = {
+    replyToken: replyToken,
+    messages: [{ type: 'text', text: text }],
+  };
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'post',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+}
+
+function linePushText_(toUserId, text) {
+  if (!toUserId) return;
+  var token = getScriptProp_('LINE_ACCESS_TOKEN', true);
+  var payload = {
+    to: toUserId,
+    messages: [{ type: 'text', text: text }],
+  };
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'post',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+}
+
+/**
+ * LINE画像をメモリーとしてDriveへ保存（Webhook共通・LINE_ACCESS_TOKEN使用）
+ * スクリプトプロパティ: MEMBER_PHOTO_DRIVE_FOLDER_ID（必須）
+ */
+function handleMemberCardImage_(event, userId) {
+  var messageId = event && event.message ? String(event.message.id || '') : '';
+  if (!messageId) return '画像IDを取得できませんでした。時間をおいて再送してください。';
+
+  try {
+    var photoSheet = qaGetOrCreateSheet_('MemberPhotoLog', [
+      'lineUserId',
+      'lineDisplayName',
+      'savedAt',
+      'expiresAt',
+      'driveFileId',
+      'driveFileName',
+      'driveViewUrl',
+      'thumbnailUrl',
+      'lineMessageId',
+      'status',
+    ]);
+
+    cleanupExpiredMemberPhotos_(photoSheet);
+
+    var currentCount = countActiveMemberPhotosInLastYear_(photoSheet, userId);
+    if (currentCount >= MEMBER_PHOTO_MAX_PER_YEAR) {
+      return (
+        '保存上限に達しています。メモリー写真は1年で最大' +
+        MEMBER_PHOTO_MAX_PER_YEAR +
+        '枚まで保存できます。'
+      );
+    }
+
+    var blob = lineGetMessageContentBlob_(messageId);
+    if (!blob) {
+      return '画像の取得に失敗しました。時間をおいて再送してください。';
+    }
+
+    var userDisplayName = qaGetLineDisplayName_(userId);
+    var folder = getOrCreateMemberPhotoUserFolder_(userId, userDisplayName);
+    var savedAt = new Date();
+    var expiresAt = new Date(savedAt.getTime() + MEMBER_PHOTO_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    var timestamp = Utilities.formatDate(savedAt, TZ, 'yyyyMMdd-HHmmss');
+    var fileName = 'memory-' + userId + '-' + timestamp + '.jpg';
+    blob.setName(fileName);
+
+    var file = folder.createFile(blob);
+    file.setName(fileName);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var thumbnailUrl = 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w800';
+    var viewUrl = 'https://drive.google.com/file/d/' + file.getId() + '/view';
+
+    photoSheet.appendRow([
+      userId,
+      userDisplayName,
+      Utilities.formatDate(savedAt, TZ, 'yyyy/MM/dd HH:mm:ss'),
+      Utilities.formatDate(expiresAt, TZ, 'yyyy/MM/dd HH:mm:ss'),
+      file.getId(),
+      file.getName(),
+      viewUrl,
+      thumbnailUrl,
+      messageId,
+      'ACTIVE',
+    ]);
+
+    var remain = MEMBER_PHOTO_MAX_PER_YEAR - (currentCount + 1);
+    return (
+      '写真をメモリーに保存しました。\n' +
+      '保存日: ' +
+      Utilities.formatDate(savedAt, TZ, 'yyyy/MM/dd') +
+      '\n有効期限: ' +
+      Utilities.formatDate(expiresAt, TZ, 'yyyy/MM/dd') +
+      '\n残り保存可能枚数(直近1年): ' +
+      remain +
+      '枚\nリッチメニュー「メモリー」から履歴を確認できます。'
+    );
+  } catch (err) {
+    logLineError_(event, err);
+    return '画像の保存中にエラーが発生しました。時間をおいて再送してください。';
+  }
+}
+
+/**
+ * メモリー一覧（LIFF用・新しい順）
+ *
+ * MemberPhotoLog の行形式:
+ * - 新10列: userId, displayName, savedAt, expiresAt, fileId, name, viewUrl, thumb, msgId, status(列J)
+ * - 旧8列: userId, savedAt, expiresAt, fileId, name, driveLink, msgId, status(列H)
+ */
+function memberPhotoStatus_(cell) {
+  return String(cell || '')
+    .trim()
+    .toUpperCase();
+}
+
+function getMemberPhotosForUser_(userId) {
+  var uid = String(userId || '').trim();
+  if (!uid) return [];
+
+  var ssId = getSpreadsheetId_();
+  if (!ssId) return [];
+  var ss = SpreadsheetApp.openById(ssId);
+  var sheet = ss.getSheetByName('MemberPhotoLog');
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  var data = sheet.getDataRange().getValues();
+  var now = new Date().getTime();
+  var results = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (String(row[0] || '').trim() !== uid) continue;
+
+    var st9 = memberPhotoStatus_(row[9]);
+    var st7 = memberPhotoStatus_(row[7]);
+    var isNew = st9 === 'ACTIVE';
+    var isLegacy = !isNew && st7 === 'ACTIVE';
+    if (!isNew && !isLegacy) continue;
+
+    var expiresAt;
+    var savedAt;
+    var fileId;
+    var viewUrl;
+    var thumbUrl;
+
+    if (isNew) {
+      expiresAt = parseSheetDateTime_(row[3]);
+      if (expiresAt && expiresAt.getTime() <= now) continue;
+      savedAt = String(row[2] || '');
+      fileId = String(row[4] || '');
+      viewUrl = String(row[6] || '');
+      thumbUrl = String(row[7] || '');
+    } else {
+      expiresAt = parseSheetDateTime_(row[2]);
+      if (expiresAt && expiresAt.getTime() <= now) continue;
+      savedAt = String(row[1] || '');
+      fileId = String(row[3] || '');
+      viewUrl = String(row[5] || '');
+      thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w800';
+    }
+
+    if (!thumbUrl && fileId) {
+      thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w800';
+    }
+
+    results.push({
+      savedAt: savedAt,
+      fileId: fileId,
+      viewUrl: viewUrl,
+      thumbnailUrl: thumbUrl,
+    });
+  }
+
+  results.sort(function (a, b) {
+    return a.savedAt < b.savedAt ? 1 : a.savedAt > b.savedAt ? -1 : 0;
+  });
+  return results;
+}
+
+/**
+ * MemoryPage.html（LIFF）から google.script.run で呼ぶ（fetch/CORS を避ける）
+ */
+function memoryPageGetPhotos(lineUserId) {
+  try {
+    var uid = String(lineUserId || '').trim();
+    if (!uid) return { success: false, error: 'lineUserId が必要です' };
+    var photos = getMemberPhotosForUser_(uid);
+    return { success: true, photos: photos };
+  } catch (e) {
+    return { success: false, error: e.message || String(e) };
+  }
+}
+
+function getMemberPhotoFolder_() {
+  var folderId = getScriptProp_('MEMBER_PHOTO_DRIVE_FOLDER_ID', true);
+  return DriveApp.getFolderById(folderId);
+}
+
+function getOrCreateMemberPhotoUserFolder_(userId, displayName) {
+  var parent = getMemberPhotoFolder_();
+  var safeName = sanitizeDriveFolderName_(displayName || 'no-name');
+  var folderName = String(userId || 'unknown-user') + '_' + safeName;
+  var it = parent.getFoldersByName(folderName);
+  if (it.hasNext()) return it.next();
+  return parent.createFolder(folderName);
+}
+
+function sanitizeDriveFolderName_(name) {
+  var s = String(name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+  if (!s) return 'no-name';
+  return s;
+}
+
+function lineGetMessageContentBlob_(messageId) {
+  var token = getScriptProp_('LINE_ACCESS_TOKEN', true);
+  var res = UrlFetchApp.fetch('https://api-data.line.me/v2/bot/message/' + messageId + '/content', {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) return null;
+  return res.getBlob();
+}
+
+function countActiveMemberPhotosInLastYear_(sheet, userId) {
+  var data = sheet.getDataRange().getValues();
+  var now = new Date().getTime();
+  var from = now - MEMBER_PHOTO_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  var count = 0;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '') !== String(userId)) continue;
+    if (String(data[i][9] || '') !== 'ACTIVE') continue;
+    var savedAt = parseSheetDateTime_(data[i][2]);
+    if (!savedAt) continue;
+    var t = savedAt.getTime();
+    if (t >= from && t <= now) count++;
+  }
+  return count;
+}
+
+function cleanupExpiredMemberPhotos_(sheet) {
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return;
+  var now = new Date().getTime();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][9] || '') !== 'ACTIVE') continue;
+    var expiresAt = parseSheetDateTime_(data[i][3]);
+    if (!expiresAt || expiresAt.getTime() > now) continue;
+
+    var fileId = String(data[i][4] || '');
+    if (fileId) {
+      try {
+        DriveApp.getFileById(fileId).setTrashed(true);
+      } catch (e) {
+        // 手動削除済みでも継続
+      }
+    }
+    sheet.getRange(i + 1, 10).setValue('EXPIRED');
+  }
+}
+
+function parseSheetDateTime_(value) {
+  if (!value) return null;
+  if (Object.prototype.toString.call(value) === '[object Date]') return value;
+  var s = String(value).trim();
+  if (!s) return null;
+  var normalized = s.replace(/\//g, '-');
+  var d = new Date(normalized);
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+function qaGetSpreadsheet_() {
+  var ssId = getSpreadsheetId_();
+  if (!ssId) throw new Error('SPREADSHEET_ID が未設定です');
+  return SpreadsheetApp.openById(ssId);
+}
+
+function qaGetOrCreateSheet_(name, header) {
+  var ss = qaGetSpreadsheet_();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
+  if (sheet.getLastRow() === 0 && header && header.length > 0) {
+    sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  }
+  return sheet;
+}
+
+function getQaCustomerInfo_(userId) {
+  var sheet = qaGetOrCreateSheet_('Customer', ['userId', 'name', 'memo', 'updatedAt']);
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === userId) {
+      return { name: String(data[i][1] || ''), memo: String(data[i][2] || '') };
+    }
+  }
+  return { name: '', memo: '' };
+}
+
+function registerQaCustomerName_(userId, name) {
+  var sheet = qaGetOrCreateSheet_('Customer', ['userId', 'name', 'memo', 'updatedAt']);
+  var data = sheet.getDataRange().getValues();
+  var now = Utilities.formatDate(new Date(), TZ, 'yyyy/MM/dd HH:mm:ss');
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === userId) {
+      sheet.getRange(i + 1, 2, 1, 3).setValues([[name, data[i][2] || 'LINEから自動更新', now]]);
+      return;
+    }
+  }
+  sheet.appendRow([userId, name, 'LINEから自動登録', now]);
+}
+
+function saveQaLogHorizontally_(userId, userMessage, aiResponse) {
+  var sheet = qaGetOrCreateSheet_('Log', ['userId', 'name', 'timestamp', 'userMessage', 'aiResponse']);
+  var customer = getQaCustomerInfo_(userId);
+  var userName = customer.name || qaGetLineDisplayName_(userId);
+  var timestamp = Utilities.formatDate(new Date(), TZ, 'yyyy/MM/dd HH:mm');
+
+  var lastRow = sheet.getLastRow();
+  var targetRow = -1;
+  if (lastRow >= 2) {
+    var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]) === userId) {
+        targetRow = i + 2;
+        break;
+      }
+    }
+  }
+
+  if (targetRow === -1) {
+    sheet.appendRow([userId, userName, timestamp, userMessage, aiResponse]);
+    return;
+  }
+
+  var rowValues = sheet.getRange(targetRow, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var lastUsed = rowValues.length;
+  while (lastUsed > 0 && rowValues[lastUsed - 1] === '') lastUsed--;
+  sheet.getRange(targetRow, lastUsed + 1, 1, 3).setValues([[timestamp, userMessage, aiResponse]]);
+}
+
+function qaGetLineDisplayName_(userId) {
+  if (!userId) return '未登録';
+  var token = getScriptProp_('LINE_ACCESS_TOKEN', true);
+  var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/profile/' + userId, {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true,
+  });
+  try {
+    var json = JSON.parse(res.getContentText());
+    return json.displayName || '名前未取得';
+  } catch (e) {
+    return '名前未取得';
+  }
+}
+
+function sendQaAlertToStaff_(userName, message, intentId) {
+  var adminLineId = getScriptProp_('ADMIN_LINE_ID', false);
+  if (!adminLineId) return;
+  var intentLine = intentId ? '\n意図(intentId): ' + intentId : '';
+  var text =
+    '【スタッフ通知・ChatRules】\n' +
+    'お客様名: ' +
+    userName +
+    intentLine +
+    '\n内容: ' +
+    message +
+    '\n（ChatRules で alertStaff が有効な行に一致しました）';
+  linePushText_(adminLineId, text);
+}
+
+function logLineError_(event, err) {
+  try {
+    var sheet = qaGetOrCreateSheet_('ErrorLog', ['timestamp', 'event', 'error']);
+    sheet.appendRow([
+      Utilities.formatDate(new Date(), TZ, 'yyyy/MM/dd HH:mm:ss'),
+      JSON.stringify(event || {}),
+      err && err.message ? err.message : String(err),
+    ]);
+  } catch (e) {
+    // 最後の砦: 何もしない
+  }
+}
+
+/**
+ * Messaging API向け初期化
+ * Customer / Knowledge / ChatRules / ChatState / Log / ErrorLog を作成し、サンプル行を入れる
+ */
+function setupLineQaSheets() {
+  qaGetOrCreateSheet_('Customer', ['userId', 'name', 'memo', 'updatedAt']);
+  var know = qaGetOrCreateSheet_('Knowledge', ['key', 'rule']);
+  qaGetOrCreateSheet_('ChatRules', [
+    'priority',
+    'intentId',
+    'keywords',
+    'replyText',
+    'onlyWhenStep',
+    'nextStep',
+    'alertStaff',
+  ]);
+  qaGetOrCreateSheet_('ChatState', ['userId', 'step', 'updatedAt']);
+  qaGetOrCreateSheet_('Log', ['userId', 'name', 'timestamp', 'userMessage', 'aiResponse']);
+  qaGetOrCreateSheet_('ErrorLog', ['timestamp', 'event', 'error']);
+  qaGetOrCreateSheet_('MemberPhotoLog', [
+    'lineUserId',
+    'lineDisplayName',
+    'savedAt',
+    'expiresAt',
+    'driveFileId',
+    'driveFileName',
+    'driveViewUrl',
+    'thumbnailUrl',
+    'lineMessageId',
+    'status',
+  ]);
+  var ss = qaGetSpreadsheet_();
+  if (know.getLastRow() <= 1) {
+    know.appendRow(['営業時間', '10:00〜20:00（※この行はサンプルです。実店舗の時間に書き換えてください）']);
+  }
+
+  var cr = ss.getSheetByName('ChatRules');
+  if (cr && cr.getLastRow() <= 1) {
+    cr.appendRow([
+      1,
+      'complaint',
+      '苦情,クレーム,ひどい,最悪',
+      'ご不快な思いをおかけしております。担当者が内容を確認のうえ、順番にご連絡いたします。',
+      '',
+      '',
+      'TRUE',
+    ]);
+    cr.appendRow([
+      5,
+      'hours',
+      '営業時間,何時まで,開店,閉店',
+      '{{KNOW:営業時間}}',
+      '',
+      '',
+      '',
+    ]);
+    cr.appendRow([
+      10,
+      'change_cancel',
+      '変更,日時変更,時間変更,予約変更,キャンセル,取り消し,予約キャンセル,都合が悪い,行けない',
+      'ご予約の変更・キャンセルは、リッチメニューの「予約確認・変更」からお手続きください。',
+      '',
+      '',
+      '',
+    ]);
+    cr.appendRow([
+      12,
+      'reserve',
+      '予約,空き,空いてる,取りたい,予約したい,予約できますか,空きありますか,空いてますか,来週空いてる,今週空いてる,明日空いてる',
+      'ご予約はLINEのリッチメニュー「予約する」から、空き状況をご確認のうえお申し込みください。',
+      '',
+      '',
+      '',
+    ]);
+    cr.appendRow([
+      14,
+      'menu_price',
+      'メニュー,料金,値段,いくら,価格,費用,金額',
+      'メニュー・料金は、リッチメニューの「メニュー・料金」からご確認ください。',
+      'START',
+      'START',
+      '',
+    ]);
+    cr.appendRow([
+      18,
+      'late',
+      '遅刻,遅れます,少し遅れる,間に合わない,5分遅れる,10分遅れる',
+      'ご連絡ありがとうございます。到着予定時刻をこのままご返信ください。担当に共有します。',
+      '',
+      '',
+      'TRUE',
+    ]);
+    cr.appendRow([
+      20,
+      'coupon',
+      'クーポン,割引,特典,キャンペーン',
+      'クーポン情報はリッチメニューの「クーポン」からご確認ください。',
+      '',
+      '',
+      '',
+    ]);
+    cr.appendRow([
+      30,
+      'greeting',
+      'こんにちは,こんばんは,はじめまして,よろしく',
+      'お問い合わせありがとうございます。ご用件をお送りください。内容に応じてご案内します。',
+      '',
+      '',
+      '',
+    ]);
+    cr.appendRow([
+      999,
+      'other',
+      'その他,わからない,不明,教えて',
+      '内容を確認のうえご案内します。お急ぎの場合はお電話でお問い合わせください。',
+      '',
+      '',
+      '',
+    ]);
+  }
+}
+
+/**
+ * ChatRules のサンプルを上書きする（既存行を全削除して再投入）
+ * 使いどころ:
+ * - サンプルキーワードを最新に更新したいとき
+ */
+function resetChatRulesToDefault() {
+  var sheet = qaGetOrCreateSheet_('ChatRules', [
+    'priority',
+    'intentId',
+    'keywords',
+    'replyText',
+    'onlyWhenStep',
+    'nextStep',
+    'alertStaff',
+  ]);
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 7).clearContent();
+  }
+
+  var rows = [
+    [1, 'complaint', '苦情,クレーム,ひどい,最悪', 'ご不快な思いをおかけしております。担当者が内容を確認のうえ、順番にご連絡いたします。', '', '', 'TRUE'],
+    [5, 'hours', '営業時間,何時まで,開店,閉店', '{{KNOW:営業時間}}', '', '', ''],
+    [10, 'change_cancel', '変更,日時変更,時間変更,予約変更,キャンセル,取り消し,予約キャンセル,都合が悪い,行けない', 'ご予約の変更・キャンセルは、リッチメニューの「予約確認・変更」からお手続きください。', '', '', ''],
+    [12, 'reserve', '予約,空き,空いてる,取りたい,予約したい,予約できますか,空きありますか,空いてますか,来週空いてる,今週空いてる,明日空いてる', 'ご予約はLINEのリッチメニュー「予約する」から、空き状況をご確認のうえお申し込みください。', '', '', ''],
+    [14, 'menu_price', 'メニュー,料金,値段,いくら,価格,費用,金額', 'メニュー・料金は、リッチメニューの「メニュー・料金」からご確認ください。', 'START', 'START', ''],
+    [18, 'late', '遅刻,遅れます,少し遅れる,間に合わない,5分遅れる,10分遅れる', 'ご連絡ありがとうございます。到着予定時刻をこのままご返信ください。担当に共有します。', '', '', 'TRUE'],
+    [20, 'coupon', 'クーポン,割引,特典,キャンペーン', 'クーポン情報はリッチメニューの「クーポン」からご確認ください。', '', '', ''],
+    [30, 'greeting', 'こんにちは,こんばんは,はじめまして,よろしく', 'お問い合わせありがとうございます。ご用件をお送りください。内容に応じてご案内します。', '', '', ''],
+    [999, 'other', 'その他,わからない,不明,教えて', '内容を確認のうえご案内します。お急ぎの場合はお電話でお問い合わせください。', '', '', ''],
+  ];
+  sheet.getRange(2, 1, rows.length, 7).setValues(rows);
 }

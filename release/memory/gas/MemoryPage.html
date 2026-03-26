@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>メモリー</title>
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+      :root {
+        --bg: #faf7f2;
+        --card: #fffefb;
+        --line: #e8ddd2;
+        --text: #2c1a0e;
+        --sub: #7a6555;
+        --accent: #b5714a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .wrap { max-width: 430px; margin: 0 auto; min-height: 100vh; }
+      header {
+        background: var(--card);
+        border-bottom: 1px solid var(--line);
+        padding: 16px;
+        position: sticky;
+        top: 0;
+      }
+      h1 { margin: 0; font-size: 18px; }
+      .sub { margin-top: 4px; color: var(--sub); font-size: 12px; }
+      .content { padding: 14px; }
+      .month {
+        margin: 18px 0 8px;
+        color: var(--accent);
+        font-weight: 700;
+        font-size: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .photo {
+        display: block;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        background: #fff;
+        text-decoration: none;
+      }
+      .photo img {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        object-fit: cover;
+        display: block;
+      }
+      .date {
+        font-size: 11px;
+        color: var(--sub);
+        padding: 6px 8px 8px;
+      }
+      .empty, .loading, .error {
+        margin-top: 70px;
+        text-align: center;
+        color: var(--sub);
+        font-size: 14px;
+        line-height: 1.7;
+      }
+      .badge {
+        margin-left: 8px;
+        background: #f5e8dd;
+        color: var(--accent);
+        font-size: 11px;
+        border-radius: 999px;
+        padding: 3px 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <h1>メモリー</h1>
+            <div id="meta" class="sub">読み込み中...</div>
+          </div>
+          <div id="count" class="badge" style="display:none;"></div>
+        </div>
+      </header>
+      <main id="app" class="content"></main>
+    </div>
+
+    <script>
+      const LIFF_ID = '<?= liffId ?>';
+      const WEB_APP_URL = '<?= webAppUrl ?>';
+
+      function monthLabel(savedAt) {
+        const d = new Date(savedAt.replace(/\//g, '-'));
+        if (Number.isNaN(d.getTime())) return savedAt.slice(0, 7);
+        return `${d.getFullYear()}年${d.getMonth() + 1}月`;
+      }
+
+      function shortDate(savedAt) {
+        const d = new Date(savedAt.replace(/\//g, '-'));
+        if (Number.isNaN(d.getTime())) return savedAt;
+        return `${d.getMonth() + 1}/${d.getDate()}`;
+      }
+
+      function setMeta(text) { document.getElementById('meta').textContent = text; }
+      function renderLoading() { document.getElementById('app').innerHTML = '<div class="loading">読み込み中...</div>'; }
+      function renderError(msg) { document.getElementById('app').innerHTML = '<div class="error">表示に失敗しました<br>' + (msg || '') + '</div>'; }
+      function renderEmpty() { document.getElementById('app').innerHTML = '<div class="empty">まだ写真がありません。<br>LINEトークに写真を送ると保存されます。</div>'; }
+
+      function renderPhotos(photos) {
+        const groups = new Map();
+        photos.forEach((p) => {
+          const key = monthLabel(p.savedAt);
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(p);
+        });
+
+        const app = document.getElementById('app');
+        app.innerHTML = '';
+
+        groups.forEach((arr, month) => {
+          const monthEl = document.createElement('div');
+          monthEl.className = 'month';
+          monthEl.textContent = month;
+          app.appendChild(monthEl);
+
+          const grid = document.createElement('div');
+          grid.className = 'grid';
+
+          arr.forEach((p) => {
+            const a = document.createElement('a');
+            a.className = 'photo';
+            a.href = p.viewUrl || p.thumbnailUrl;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.innerHTML =
+              '<img src="' + (p.thumbnailUrl || '') + '" alt="photo">' +
+              '<div class="date">' + shortDate(p.savedAt) + '</div>';
+            grid.appendChild(a);
+          });
+
+          app.appendChild(grid);
+        });
+      }
+
+      async function boot() {
+        try {
+          if (!LIFF_ID) {
+            renderError('MEMORY_LIFF_ID が未設定です');
+            return;
+          }
+
+          renderLoading();
+          await liff.init({ liffId: LIFF_ID });
+
+          if (!liff.isLoggedIn()) {
+            liff.login();
+            return;
+          }
+
+          const p = await liff.getProfile();
+          setMeta(`${p.displayName} さんの履歴`);
+
+          const res = await fetch(
+            WEB_APP_URL + '?action=photos&lineUserId=' + encodeURIComponent(p.userId),
+            { method: 'GET' }
+          );
+          const data = await res.json();
+
+          if (!data.success) {
+            renderError(data.error || '取得失敗');
+            return;
+          }
+
+          const photos = data.photos || [];
+          const count = document.getElementById('count');
+          count.style.display = 'inline-block';
+          count.textContent = photos.length + '枚';
+
+          if (photos.length === 0) {
+            renderEmpty();
+            return;
+          }
+
+          renderPhotos(photos);
+        } catch (e) {
+          renderError(e && e.message ? e.message : String(e));
+        }
+      }
+
+      boot();
+    </script>
+  </body>
+</html>
+
