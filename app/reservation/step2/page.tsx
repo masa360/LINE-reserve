@@ -42,6 +42,17 @@ function generateDates(): { dateStr: string; label: string; dayOfWeek: string }[
 
 const DATES = generateDates();
 
+function withinShift(time: string, start: string, end: string): boolean {
+  return time >= start && time < end;
+}
+
+function applyShiftToSlots(slots: TimeSlot[], staffId: string): TimeSlot[] {
+  const shift = staffShiftHours[staffId] ?? staffShiftHours['staff-00'];
+  return slots
+    .filter((slot) => withinShift(slot.time, shift.start, shift.end))
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+
 function dummySlotsForStaff(staffId: string): TimeSlot[] {
   const key = staffId as keyof typeof unavailableSlots;
   const blocked = unavailableSlots[key] ?? [];
@@ -53,7 +64,7 @@ export default function ReservationStep2() {
   const router = useRouter();
   const { state, dispatch } = useReservation();
 
-  const selectedStaffId = state.selectedStaff?.id ?? 'staff-00';
+  const selectedStaffId = state.selectedStaff?.id ?? 'staff-01';
   const selectedDate = state.selectedDate ?? DATES[0].dateStr;
   const totals = buildReservationTotals(
     state.selectedMenu,
@@ -80,7 +91,7 @@ export default function ReservationStep2() {
     });
 
     if (result.ok) {
-      setTimeSlots(result.slots);
+      setTimeSlots(applyShiftToSlots(result.slots, selectedStaffId));
       setUsingDemoSlots(false);
     } else {
       setTimeSlots(dummySlotsForStaff(selectedStaffId));
@@ -90,6 +101,13 @@ export default function ReservationStep2() {
 
     setSlotsLoading(false);
   }, [selectedDate, selectedStaffId, durationMinutes]);
+
+  useEffect(() => {
+    if (!state.selectedStaff) {
+      const defaultStaff = staffList.find((s) => s.id === 'staff-01') ?? staffList[0];
+      dispatch({ type: 'SET_STAFF', payload: defaultStaff });
+    }
+  }, [dispatch, state.selectedStaff]);
 
   useEffect(() => {
     void loadSlots();
@@ -137,7 +155,7 @@ export default function ReservationStep2() {
               <StaffCard
                 key={staff.id}
                 staff={staff}
-                isSelected={state.selectedStaff ? state.selectedStaff.id === staff.id : staff.id === 'staff-00'}
+                isSelected={state.selectedStaff ? state.selectedStaff.id === staff.id : staff.id === 'staff-01'}
                 onSelect={handleSelectStaff}
               />
             ))}
