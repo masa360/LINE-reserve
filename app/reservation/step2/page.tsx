@@ -11,8 +11,10 @@ import {
   staffList,
   generateTimeSlots,
   unavailableSlots,
+  staffShiftHours,
 } from '@/data/dummyData';
 import { fetchAvailabilityFromGas } from '@/lib/reservationApi';
+import { buildReservationTotals } from '@/lib/reservationTotals';
 import type { Staff, TimeSlot } from '@/types';
 
 /** 端末のローカル日付を YYYY-MM-DD に（toISOString の日付ずれを防ぐ） */
@@ -43,7 +45,8 @@ const DATES = generateDates();
 function dummySlotsForStaff(staffId: string): TimeSlot[] {
   const key = staffId as keyof typeof unavailableSlots;
   const blocked = unavailableSlots[key] ?? [];
-  return generateTimeSlots(blocked);
+  const shift = staffShiftHours[staffId] ?? staffShiftHours['staff-00'];
+  return generateTimeSlots(blocked, shift.start, shift.end);
 }
 
 export default function ReservationStep2() {
@@ -52,7 +55,12 @@ export default function ReservationStep2() {
 
   const selectedStaffId = state.selectedStaff?.id ?? 'staff-00';
   const selectedDate = state.selectedDate ?? DATES[0].dateStr;
-  const durationMinutes = state.selectedMenu?.duration ?? 60;
+  const totals = buildReservationTotals(
+    state.selectedMenu,
+    state.selectedStyleMenu ?? null,
+    state.selectedCareMenu ?? null,
+  );
+  const durationMinutes = totals.totalDuration > 0 ? totals.totalDuration : 60;
 
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(() =>
     dummySlotsForStaff(selectedStaffId),

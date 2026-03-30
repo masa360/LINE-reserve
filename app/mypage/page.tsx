@@ -3,13 +3,6 @@
 import Link from 'next/link';
 import { currentUser, pastReservations } from '@/data/dummyData';
 
-const RANK_CONFIG = {
-  STANDARD: { label: 'STANDARD', color: 'from-[#8C7565] to-[#6B5444]',  badge: 'text-[#7A6555]' },
-  SILVER:   { label: 'SILVER',   color: 'from-[#9EA8B0] to-[#6B7880]',  badge: 'text-[#6B7880]' },
-  GOLD:     { label: 'GOLD',     color: 'from-[#C4944A] to-[#9A6C28]',  badge: 'text-[#9A6C28]' },
-  PLATINUM: { label: 'PLATINUM', color: 'from-[#8C8CA0] to-[#5C5C78]',  badge: 'text-[#5C5C78]' },
-};
-
 function Barcode() {
   const bars = [3, 1, 2, 1, 3, 1, 1, 2, 1, 3, 2, 1, 1, 3, 1, 2, 2, 1, 3, 1, 2, 1, 1, 3, 2, 1, 3, 1, 2, 1];
   return (
@@ -55,7 +48,6 @@ function MenuLink({ href, icon, title, subtitle, badge }: MenuLinkProps) {
 
 export default function MyPage() {
   const user = currentUser;
-  const rank = RANK_CONFIG[user.rank];
   const upcomingCount  = pastReservations.filter((r) => r.status === 'upcoming').length;
   const completedCount = pastReservations.filter((r) => r.status === 'completed').length;
 
@@ -74,15 +66,13 @@ export default function MyPage() {
           <div>
             <p className="text-base font-bold text-[#2C1A0E]">{user.name}</p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <span className={`text-xs font-bold ${rank.badge}`}>{rank.label}会員</span>
-              <span className="text-[#D4C4B4]">·</span>
               <span className="text-xs text-[#7A6555]">累計来店 {user.visitCount}回</span>
             </div>
           </div>
         </div>
 
         {/* デジタル会員証カード */}
-        <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${rank.color} p-5 shadow-lg`}>
+        <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-[#8C7565] to-[#6B5444] p-5 shadow-lg">
           <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-white/10" />
           <div className="absolute right-4 bottom-4 w-20 h-20 rounded-full bg-white/5" />
           <div className="relative z-10">
@@ -93,7 +83,7 @@ export default function MyPage() {
                 </p>
                 <p className="text-white font-bold text-lg mt-0.5">MEMBERSHIP CARD</p>
               </div>
-              <span className="text-white/80 text-xs font-bold tracking-wider">{rank.label}</span>
+              <span className="text-white/80 text-xs font-bold tracking-wider">MEMBER</span>
             </div>
             <p className="text-white font-bold text-base tracking-wider">{user.name}</p>
             <div className="mt-3 bg-white/90 rounded-lg p-2.5 inline-block">
@@ -105,22 +95,8 @@ export default function MyPage() {
           </div>
         </div>
 
-        {/* ポイント・予約サマリー */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-[#FFFEFB] rounded-2xl p-4 border border-[#E8DDD2]">
-            <p className="text-xs text-[#7A6555]">保有ポイント</p>
-            <p className="text-2xl font-bold text-[#2C1A0E] mt-1">
-              {user.points.toLocaleString('ja-JP')}
-              <span className="text-sm font-medium text-[#7A6555] ml-1">pt</span>
-            </p>
-            <div className="mt-2 h-1.5 bg-[#F0E9E0] rounded-full overflow-hidden">
-              <div className="h-full bg-[#B5714A] rounded-full"
-                style={{ width: `${(user.points / 2000) * 100}%` }} />
-            </div>
-            <p className="text-[10px] text-[#B0A090] mt-1">
-              PLATINUMまで {(2000 - user.points).toLocaleString()}pt
-            </p>
-          </div>
+        {/* 予約サマリー */}
+        <div className="grid grid-cols-1 gap-3">
           <div className="bg-[#FFFEFB] rounded-2xl p-4 border border-[#E8DDD2]">
             <p className="text-xs text-[#7A6555]">次回の予約</p>
             <p className="text-2xl font-bold text-[#2C1A0E] mt-1">
@@ -146,9 +122,6 @@ export default function MyPage() {
             icon={<svg className="w-5 h-5 text-[#B5714A]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
             title="予約履歴" subtitle="過去の予約・来店履歴"
             badge={upcomingCount > 0 ? `次回${upcomingCount}件` : undefined} />
-          <MenuLink href="/mypage"
-            icon={<svg className="w-5 h-5 text-[#B5714A]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.562.562 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" /></svg>}
-            title="ポイント履歴" subtitle={`現在 ${user.points.toLocaleString()}pt 保有中`} />
           <MenuLink href="/mypage"
             icon={<svg className="w-5 h-5 text-[#B5714A]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" /></svg>}
             title="プロフィール編集" subtitle="名前・連絡先の変更" />

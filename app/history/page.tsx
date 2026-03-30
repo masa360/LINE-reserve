@@ -1,7 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { pastReservations } from '@/data/dummyData';
+import { useRouter } from 'next/navigation';
+import { useReservation } from '@/app/context/ReservationContext';
+import { menus, pastReservations, staffList } from '@/data/dummyData';
 import type { PastReservation } from '@/types';
 
 function formatDate(dateStr: string): string {
@@ -28,8 +30,35 @@ function StatusBadge({ status }: { status: PastReservation['status'] }) {
 }
 
 export default function HistoryPage() {
+  const router = useRouter();
+  const { dispatch } = useReservation();
   const upcoming = pastReservations.filter((r) => r.status === 'upcoming');
   const past     = pastReservations.filter((r) => r.status !== 'upcoming');
+
+  const normalize = (s: string) => s.replace(/[ 　]/g, '').toLowerCase();
+  const findMenu = (name: string) => {
+    const key = normalize(name);
+    return menus.find((m) => normalize(m.name) === key) ?? null;
+  };
+  const findStaff = (name: string) =>
+    staffList.find((s) => s.name === name) ?? staffList[0];
+  const handleRebook = (res: PastReservation) => {
+    const parts = res.menuName.split('＋').map((x) => x.trim()).filter(Boolean);
+    const base = parts.map(findMenu).find((m) => m?.category === 'cut') ?? null;
+    if (!base) return;
+    const style = parts.map(findMenu).find((m) => m?.category === 'colorperm') ?? null;
+    const care = parts.map(findMenu).find((m) => m?.category === 'care') ?? null;
+    dispatch({
+      type: 'APPLY_REBOOK_PATCH',
+      payload: {
+        selectedMenu: base,
+        selectedStyleMenu: style,
+        selectedCareMenu: care,
+        selectedStaff: findStaff(res.staffName),
+      },
+    });
+    router.push('/reservation/step2');
+  };
 
   return (
     <div className="min-h-full bg-[#FAF7F2]">
@@ -53,10 +82,19 @@ export default function HistoryPage() {
                     <p className="text-sm font-bold text-[#2C1A0E] mt-2">{formatDate(res.date)}</p>
                     <p className="text-sm text-[#7A6555] font-medium">{res.time}〜</p>
                   </div>
-                  <Link href="/reservation"
-                    className="text-[10px] font-bold text-[#7A6555] border border-[#E8DDD2] rounded-lg px-2.5 py-1.5 hover:bg-[#F5E8DD] transition-colors">
-                    変更・取消
-                  </Link>
+                  <div className="flex flex-col items-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleRebook(res)}
+                      className="text-[10px] font-bold text-[#7A3E1E] border border-[#E8C9A8] rounded-lg px-2 py-1 bg-[#FDF5EF]"
+                    >
+                      同じ内容で再予約
+                    </button>
+                    <Link href="/reservation"
+                      className="text-[10px] font-bold text-[#7A6555] border border-[#E8DDD2] rounded-lg px-2.5 py-1.5 hover:bg-[#F5E8DD] transition-colors">
+                      変更・取消
+                    </Link>
+                  </div>
                 </div>
                 <div className="h-px bg-[#F0E9E0] my-3" />
                 <div className="space-y-1.5">
@@ -99,7 +137,16 @@ export default function HistoryPage() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-[#7A6555]">担当：{res.staffName}</span>
-                    <span className="text-xs font-bold text-[#B5714A]">{formatPrice(res.price)}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleRebook(res)}
+                        className="text-[10px] font-bold text-[#7A3E1E] border border-[#E8C9A8] rounded-lg px-2 py-1 bg-[#FDF5EF]"
+                      >
+                        同じ内容で再予約
+                      </button>
+                      <span className="text-xs font-bold text-[#B5714A]">{formatPrice(res.price)}</span>
+                    </div>
                   </div>
                 </div>
               ))
