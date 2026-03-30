@@ -29,8 +29,8 @@ var PROP_KEYS = {
   SPREADSHEET_ID: 'SPREADSHEET_ID',
 };
 
-/** 予約可能時間（開始は9:00〜、終了時刻はこの時間を超えないこと） */
-var BUSINESS_START_HOUR = 9;
+/** 予約可能時間（開始は10:00〜、終了時刻はこの時間を超えないこと） */
+var BUSINESS_START_HOUR = 10;
 /** 営業終了（例: 20:00）。これより後に終わる予約は不可 */
 var BUSINESS_CLOSE_HOUR = 20;
 
@@ -42,6 +42,13 @@ var STAFF_IDS = {
   ANY: 'staff-00',
   YAMAMOTO: 'staff-01',
   OGAWA: 'staff-02',
+};
+
+/** スタッフ勤務シフト（早番/遅番） */
+var STAFF_SHIFTS = {
+  'staff-00': { start: '10:00', end: '20:00' }, // 指名なし
+  'staff-01': { start: '10:00', end: '17:00' }, // 早番
+  'staff-02': { start: '13:00', end: '20:00' }, // 遅番
 };
 
 // ------------------------------------------------------------
@@ -140,6 +147,14 @@ function handleRequest_(query, body) {
       return jsonResponse_(200, result);
     }
 
+    if (action === 'cancelReservation') {
+      if (!body) {
+        return jsonResponse_(400, { success: false, error: 'POST本文が空です' });
+      }
+      var cancelResult = cancelReservation_(body);
+      return jsonResponse_(200, cancelResult);
+    }
+
     if (action === 'health') {
       return jsonResponse_(200, { success: true, message: 'ok', ts: new Date().toISOString() });
     }
@@ -203,11 +218,34 @@ function getAvailability_(dateStr, staffId, durationMinutes) {
       continue;
     }
 
+    if (staffId !== STAFF_IDS.ANY && !isWithinStaffShift_(staffId, slotStart, slotEnd)) {
+      slots.push({ time: formatTime_(slotStart), available: false });
+      continue;
+    }
+
     var available = isSlotAvailable_(events, staffId, slotStart, slotEnd);
     slots.push({ time: formatTime_(slotStart), available: available });
   }
 
   return slots;
+}
+
+function getStaffShift_(staffId) {
+  return STAFF_SHIFTS[staffId] || STAFF_SHIFTS[STAFF_IDS.ANY];
+}
+
+function parseTimeToMinutes_(timeStr) {
+  var p = String(timeStr || '00:00').split(':');
+  return parseInt(p[0], 10) * 60 + parseInt(p[1], 10);
+}
+
+function isWithinStaffShift_(staffId, rangeStart, rangeEnd) {
+  var shift = getStaffShift_(staffId);
+  var startMin = parseTimeToMinutes_(shift.start);
+  var endMin = parseTimeToMinutes_(shift.end);
+  var slotStartMin = rangeStart.getHours() * 60 + rangeStart.getMinutes();
+  var slotEndMin = rangeEnd.getHours() * 60 + rangeEnd.getMinutes();
+  return slotStartMin >= startMin && slotEndMin <= endMin;
 }
 
 /**
@@ -340,6 +378,9 @@ function createReservation_(body) {
       throw new Error('この時間帯は指名なしでも空きがありません');
     }
   } else {
+    if (!isWithinStaffShift_(staffId, start, end)) {
+      throw new Error('担当スタッフの勤務時間外のため予約できません');
+    }
     if (!isSlotAvailable_(events, staffId, start, end)) {
       throw new Error('この時間帯はすでに予約が入っています');
     }
@@ -408,6 +449,7 @@ function pickAvailableStaff_(events, rangeStart, rangeEnd) {
   var tryOrder = [STAFF_IDS.YAMAMOTO, STAFF_IDS.OGAWA];
   for (var i = 0; i < tryOrder.length; i++) {
     var sid = tryOrder[i];
+    if (!isWithinStaffShift_(sid, rangeStart, rangeEnd)) continue;
     if (!hasOverlapForStaff_(filterReserveEvents_(events), sid, rangeStart, rangeEnd)) {
       return sid;
     }
@@ -447,6 +489,70 @@ function buildDescription_(data) {
     'lineDisplayName:' + (data.lineDisplayName || ''),
   ];
   return lines.join('\n');
+}
+
+// ------------------------------------------------------------
+// 予約キャンセル
+// ------------------------------------------------------------
+
+function cancelReservation_(body) {
+  var dateStr = String(body.date || '').trim();
+  var timeStr = String(body.time || '').trim();
+  var eventId = String(body.eventId || '').trim();
+  var staffName = String(body.staffName || '').trim();
+  var menuName = String(body.menuName || '').trim();
+  var customerName = String(body.customerName || '').trim();
+
+  if (!dateStr || !timeStr) {
+    throw new Error('date と time は必須です');
+  }
+
+  // 当日9:00を過ぎたらオンライン取消不可
+  var now = new Date();
+  var cancelDeadline = parseDateTime_(dateStr, '09:00');
+  if (now.getTime() > cancelDeadline.getTime()) {
+    return {
+      success: false,
+      error: '当日9:00を過ぎているため、オンラインでは取消できません。店舗へお電話ください。',
+      requirePhoneCall: true,
+    };
+  }
+
+  var calendar = getCalendar_();
+  var dayRange = getDayRange_(dateStr);
+  var events = filterReserveEvents_(calendar.getEvents(dayRange.start, dayRange.end));
+  var target = null;
+
+  for (var i = 0; i < events.length; i++) {
+    var ev = events[i];
+    if (eventId && ev.getId() === eventId) {
+      target = ev;
+      break;
+    }
+    if (formatTime_(ev.getStartTime()) !== timeStr) continue;
+    var title = ev.getTitle() || '';
+    if (staffName && title.indexOf(staffName) === -1) continue;
+    if (menuName && title.indexOf(menuName) === -1) continue;
+    if (customerName && title.indexOf(customerName) === -1) continue;
+    target = ev;
+    break;
+  }
+
+  if (!target) {
+    throw new Error('取消対象の予約が見つかりませんでした');
+  }
+
+  var prevTitle = target.getTitle() || '';
+  if (prevTitle.indexOf('[キャンセル]') !== 0) {
+    target.setTitle('[キャンセル] ' + prevTitle);
+  }
+  var prevDesc = target.getDescription() || '';
+  if (prevDesc.indexOf('status:cancelled') === -1) {
+    var cancelledAt = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
+    target.setDescription(prevDesc + '\nstatus:cancelled\ncancelledAt:' + cancelledAt);
+  }
+
+  return { success: true, eventId: target.getId() };
 }
 
 // ------------------------------------------------------------

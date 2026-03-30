@@ -16,6 +16,13 @@ export interface CreateReservationApiResponse {
   error?: string;
 }
 
+export interface CancelReservationApiResponse {
+  success: boolean;
+  eventId?: string;
+  error?: string;
+  requirePhoneCall?: boolean;
+}
+
 /**
  * Next.js の /api/reservations 経由で GAS を呼び出す
  */
@@ -109,4 +116,38 @@ export async function createReservationOnGas(params: {
       : '予約の登録に失敗しました';
 
   return { success: false, error: err };
+}
+
+export async function cancelReservationOnGas(params: {
+  eventId?: string;
+  date: string;
+  time: string;
+  staffName?: string;
+  menuName?: string;
+  customerName?: string;
+}): Promise<{ success: boolean; error?: string; requirePhoneCall?: boolean }> {
+  const { ok, data } = await callReservationApi<CancelReservationApiResponse>({
+    action: 'cancelReservation',
+    eventId: params.eventId ?? '',
+    date: params.date,
+    time: params.time,
+    staffName: params.staffName ?? '',
+    menuName: params.menuName ?? '',
+    customerName: params.customerName ?? '',
+  });
+
+  if (ok && data.success) {
+    return { success: true };
+  }
+
+  const err =
+    data && typeof data === 'object' && data.error
+      ? String(data.error)
+      : '予約の取消に失敗しました';
+
+  return {
+    success: false,
+    error: err,
+    requirePhoneCall: !!(data && typeof data === 'object' && data.requirePhoneCall),
+  };
 }

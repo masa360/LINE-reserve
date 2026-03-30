@@ -2,9 +2,13 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useMemo, useState } from 'react';
 import { useReservation } from '@/app/context/ReservationContext';
-import { menus, pastReservations, staffList } from '@/data/dummyData';
+import { currentUser, menus, pastReservations, staffList } from '@/data/dummyData';
+import { cancelReservationOnGas } from '@/lib/reservationApi';
 import type { PastReservation } from '@/types';
+
+const TEMP_STORE_PHONE = '03-0000-0000';
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
@@ -13,6 +17,12 @@ function formatDate(dateStr: string): string {
 }
 function formatPrice(price: number): string {
   return `¥${price.toLocaleString('ja-JP')}`;
+}
+
+function canCancelOnline(reservation: PastReservation, now: Date): boolean {
+  // 当日9:00までオンラインキャンセル可
+  const deadline = new Date(`${reservation.date}T09:00:00`);
+  return now.getTime() <= deadline.getTime();
 }
 
 function StatusBadge({ status }: { status: PastReservation['status'] }) {
@@ -32,8 +42,16 @@ function StatusBadge({ status }: { status: PastReservation['status'] }) {
 export default function HistoryPage() {
   const router = useRouter();
   const { dispatch } = useReservation();
-  const upcoming = pastReservations.filter((r) => r.status === 'upcoming');
-  const past     = pastReservations.filter((r) => r.status !== 'upcoming');
+  const [reservations, setReservations] = useState<PastReservation[]>(pastReservations);
+  const [cancelMessage, setCancelMessage] = useState<string | null>(null);
+  const upcoming = useMemo(
+    () => reservations.filter((r) => r.status === 'upcoming'),
+    [reservations],
+  );
+  const past = useMemo(
+    () => reservations.filter((r) => r.status !== 'upcoming'),
+    [reservations],
+  );
 
   const normalize = (s: string) => s.replace(/[ 　]/g, '').toLowerCase();
   const findMenu = (name: string) => {
@@ -60,6 +78,48 @@ export default function HistoryPage() {
     router.push('/reservation/step2');
   };
 
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const handleCancel = async (res: PastReservation) => {
+    if (!canCancelOnline(res, new Date())) {
+      setCancelMessage(
+        `この予約は当日9:00を過ぎているため、オンラインでは取消できません。店舗へお電話ください（${TEMP_STORE_PHONE}）。`,
+      );
+      return;
+    }
+
+    const ok = window.confirm('この予約をキャンセルしますか？');
+    if (!ok) return;
+
+    setCancellingId(res.id);
+    const result = await cancelReservationOnGas({
+      date: res.date,
+      time: res.time,
+      staffName: res.staffName,
+      menuName: res.menuName,
+      customerName: currentUser.name,
+    });
+    setCancellingId(null);
+
+    if (!result.success) {
+      if (result.requirePhoneCall) {
+        setCancelMessage(
+          `この予約は当日9:00を過ぎているため、オンラインでは取消できません。店舗へお電話ください（${TEMP_STORE_PHONE}）。`,
+        );
+      } else {
+        setCancelMessage(result.error || '取消に失敗しました。時間をおいて再度お試しください。');
+      }
+      return;
+    }
+
+    setReservations((prev) =>
+      prev.map((item) =>
+        item.id === res.id ? { ...item, status: 'cancelled' } : item,
+      ),
+    );
+    setCancelMessage('予約をキャンセルしました。');
+  };
+
   return (
     <div className="min-h-full bg-[#FAF7F2]">
       <header className="bg-[#FFFEFB] px-4 pt-10 pb-4 border-b border-[#F0E9E0]">
@@ -67,6 +127,12 @@ export default function HistoryPage() {
       </header>
 
       <div className="px-4 py-4 space-y-5">
+        {cancelMessage && (
+          <div className="rounded-xl border border-[#E8C9A8] bg-[#FDF5EF] px-3 py-2 text-xs text-[#7A3E1E]">
+            {cancelMessage}
+          </div>
+        )}
+
         {/* 次回予約 */}
         {upcoming.length > 0 && (
           <section>
@@ -90,10 +156,20 @@ export default function HistoryPage() {
                     >
                       同じ内容で再予約
                     </button>
-                    <Link href="/reservation"
-                      className="text-[10px] font-bold text-[#7A6555] border border-[#E8DDD2] rounded-lg px-2.5 py-1.5 hover:bg-[#F5E8DD] transition-colors">
-                      変更・取消
+                    <Link
+                      href="/reservation"
+                      className="text-[10px] font-bold text-[#7A6555] border border-[#E8DDD2] rounded-lg px-2.5 py-1.5 hover:bg-[#F5E8DD] transition-colors"
+                    >
+                      変更
                     </Link>
+                    <button
+                      type="button"
+                      onClick={() => handleCancel(res)}
+                      disabled={cancellingId === res.id}
+                      className="text-[10px] font-bold text-[#7A6555] border border-[#E8DDD2] rounded-lg px-2.5 py-1.5 hover:bg-[#F5E8DD] transition-colors"
+                    >
+                      {cancellingId === res.id ? 'キャンセル中...' : 'キャンセル'}
+                    </button>
                   </div>
                 </div>
                 <div className="h-px bg-[#F0E9E0] my-3" />
@@ -158,6 +234,9 @@ export default function HistoryPage() {
           className="flex w-full h-12 bg-[#B5714A] text-white rounded-xl text-sm font-bold items-center justify-center hover:bg-[#9A5C38] transition-colors">
           新しく予約する
         </Link>
+        <p className="text-[10px] text-[#B0A090] leading-relaxed">
+          予約取消は当日9:00までオンライン対応です。以降は店舗へ電話連絡（仮: {TEMP_STORE_PHONE}）をお願いします。
+        </p>
       </div>
     </div>
   );
