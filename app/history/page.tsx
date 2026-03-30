@@ -2,10 +2,10 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useReservation } from '@/app/context/ReservationContext';
 import { currentUser, menus, pastReservations, staffList } from '@/data/dummyData';
-import { cancelReservationOnGas } from '@/lib/reservationApi';
+import { cancelReservationOnGas, fetchReservationsFromGas } from '@/lib/reservationApi';
 import type { PastReservation } from '@/types';
 
 const TEMP_STORE_PHONE = '03-0000-0000';
@@ -44,6 +44,7 @@ export default function HistoryPage() {
   const { dispatch } = useReservation();
   const [reservations, setReservations] = useState<PastReservation[]>(pastReservations);
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
+  const [loadingReservations, setLoadingReservations] = useState(true);
   const upcoming = useMemo(
     () => reservations.filter((r) => r.status === 'upcoming'),
     [reservations],
@@ -79,6 +80,24 @@ export default function HistoryPage() {
   };
 
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const result = await fetchReservationsFromGas({
+        customerName: currentUser.name,
+        limit: 50,
+      });
+      if (!alive) return;
+      if (result.ok && result.reservations.length > 0) {
+        setReservations(result.reservations);
+      }
+      setLoadingReservations(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const handleCancel = async (res: PastReservation) => {
     if (!canCancelOnline(res, new Date())) {
@@ -130,6 +149,11 @@ export default function HistoryPage() {
         {cancelMessage && (
           <div className="rounded-xl border border-[#E8C9A8] bg-[#FDF5EF] px-3 py-2 text-xs text-[#7A3E1E]">
             {cancelMessage}
+          </div>
+        )}
+        {loadingReservations && (
+          <div className="rounded-xl border border-[#E8DDD2] bg-[#FFFEFB] px-3 py-2 text-xs text-[#7A6555]">
+            最新の予約履歴を読み込み中...
           </div>
         )}
 

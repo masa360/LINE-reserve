@@ -23,6 +23,22 @@ export interface CancelReservationApiResponse {
   requirePhoneCall?: boolean;
 }
 
+export interface ReservationListItemApi {
+  id: string;
+  date: string;
+  time: string;
+  menuName: string;
+  staffName: string;
+  price: number;
+  status: 'completed' | 'upcoming' | 'cancelled';
+}
+
+export interface GetReservationsApiResponse {
+  success: boolean;
+  reservations?: ReservationListItemApi[];
+  error?: string;
+}
+
 /**
  * Next.js の /api/reservations 経由で GAS を呼び出す
  */
@@ -150,4 +166,29 @@ export async function cancelReservationOnGas(params: {
     error: err,
     requirePhoneCall: !!(data && typeof data === 'object' && data.requirePhoneCall),
   };
+}
+
+export async function fetchReservationsFromGas(params: {
+  customerName: string;
+  lineUserId?: string;
+  limit?: number;
+}): Promise<
+  | { ok: true; reservations: ReservationListItemApi[] }
+  | { ok: false; error: string }
+> {
+  const { ok, data } = await callReservationApi<GetReservationsApiResponse>({
+    action: 'getReservations',
+    customerName: params.customerName,
+    lineUserId: params.lineUserId ?? '',
+    limit: params.limit ?? 30,
+  });
+
+  if (ok && data.success && Array.isArray(data.reservations)) {
+    return { ok: true, reservations: data.reservations };
+  }
+
+  const msg =
+    (data && typeof data === 'object' && data.error && String(data.error)) ||
+    (!ok ? 'サーバーと通信できませんでした' : '予約一覧を取得できませんでした');
+  return { ok: false, error: msg };
 }

@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { store, pastReservations } from '@/data/dummyData';
+import { useEffect, useState } from 'react';
+import { currentUser, store, pastReservations } from '@/data/dummyData';
+import { fetchReservationsFromGas } from '@/lib/reservationApi';
+import type { PastReservation } from '@/types';
 
-const upcomingReservation = pastReservations.find((r) => r.status === 'upcoming');
 const MAP_EMBED_SRC =
   process.env.NEXT_PUBLIC_MAP_EMBED_SRC?.trim() ??
   'https://www.google.com/maps?q=Tokyo+Station&output=embed';
@@ -18,6 +20,28 @@ function InfoRow({ icon, text }: { icon: React.ReactNode; text: string }) {
 }
 
 export default function HomePage() {
+  const [upcomingReservation, setUpcomingReservation] = useState<PastReservation | undefined>(
+    () => pastReservations.find((r) => r.status === 'upcoming'),
+  );
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const result = await fetchReservationsFromGas({
+        customerName: currentUser.name,
+        limit: 10,
+      });
+      if (!alive || !result.ok) return;
+      const upcoming = result.reservations
+        .filter((r) => r.status === 'upcoming')
+        .sort((a, b) => (a.date + a.time > b.date + b.time ? 1 : -1))[0];
+      setUpcomingReservation(upcoming);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="min-h-full bg-[#FAF7F2]">
       {/* ヘッダー */}

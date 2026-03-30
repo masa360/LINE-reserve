@@ -147,6 +147,14 @@ function handleRequest_(query, body) {
       return jsonResponse_(200, result);
     }
 
+    if (action === 'getReservations') {
+      var lineUserId = (body && body.lineUserId) || (query && query.lineUserId) || '';
+      var customerName = (body && body.customerName) || (query && query.customerName) || '';
+      var limit = parseInt((body && body.limit) || (query && query.limit) || '30', 10);
+      var reservations = getReservations_(lineUserId, customerName, limit);
+      return jsonResponse_(200, { success: true, reservations: reservations });
+    }
+
     if (action === 'cancelReservation') {
       if (!body) {
         return jsonResponse_(400, { success: false, error: 'POST本文が空です' });
@@ -489,6 +497,90 @@ function buildDescription_(data) {
     'lineDisplayName:' + (data.lineDisplayName || ''),
   ];
   return lines.join('\n');
+}
+
+function extractDescField_(ev, fieldName) {
+  var desc = ev.getDescription() || '';
+  var lines = desc.split(/\r?\n/);
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf(fieldName + ':') === 0) {
+      return lines[i].substring((fieldName + ':').length).trim();
+    }
+  }
+  return '';
+}
+
+function buildReservationFromEvent_(ev) {
+  var start = ev.getStartTime();
+  var title = ev.getTitle() || '';
+  var menuName = extractDescField_(ev, 'menuName');
+  var customerName = extractDescField_(ev, 'customerName');
+  var priceRaw = extractDescField_(ev, 'price');
+  var price = parseInt(priceRaw || '0', 10);
+  if (isNaN(price)) price = 0;
+  var staffName = '';
+  if (title.indexOf(' / ') !== -1) {
+    var t = title.replace('[予約] ', '').replace('[キャンセル] ', '');
+    var parts = t.split(' / ');
+    // 形式: menu / staff / customer
+    if (parts.length >= 2) staffName = parts[1];
+    if (!menuName && parts.length >= 1) menuName = parts[0];
+    if (!customerName && parts.length >= 3) customerName = parts[2];
+  }
+
+  var status = 'upcoming';
+  if (title.indexOf('[キャンセル]') === 0 || extractDescField_(ev, 'status') === 'cancelled') {
+    status = 'cancelled';
+  } else if (start.getTime() < new Date().getTime()) {
+    status = 'completed';
+  }
+
+  return {
+    id: ev.getId(),
+    date: Utilities.formatDate(start, TZ, 'yyyy-MM-dd'),
+    time: Utilities.formatDate(start, TZ, 'HH:mm'),
+    menuName: menuName || 'メニュー未設定',
+    staffName: staffName || '担当未設定',
+    customerName: customerName || '',
+    price: price,
+    status: status,
+  };
+}
+
+function getReservations_(lineUserId, customerName, limit) {
+  var calendar = getCalendar_();
+  var from = new Date();
+  from.setMonth(from.getMonth() - 6); // 過去6か月
+  var to = new Date();
+  to.setMonth(to.getMonth() + 6); // 未来6か月
+  var events = calendar.getEvents(from, to);
+
+  var uid = String(lineUserId || '').trim();
+  var cname = String(customerName || '').trim();
+  var rows = [];
+
+  for (var i = 0; i < events.length; i++) {
+    var ev = events[i];
+    if (!isReserveEvent_(ev)) continue;
+
+    var evLineUserId = extractDescField_(ev, 'lineUserId');
+    var evCustomerName = extractDescField_(ev, 'customerName');
+    if (uid && evLineUserId && evLineUserId !== uid) continue;
+    if (!uid && cname && evCustomerName && evCustomerName !== cname) continue;
+    rows.push(buildReservationFromEvent_(ev));
+  }
+
+  rows.sort(function (a, b) {
+    var ad = a.date + ' ' + a.time;
+    var bd = b.date + ' ' + b.time;
+    if (ad < bd) return 1;
+    if (ad > bd) return -1;
+    return 0;
+  });
+
+  var n = parseInt(limit || 30, 10);
+  if (isNaN(n) || n <= 0) n = 30;
+  return rows.slice(0, n);
 }
 
 // ------------------------------------------------------------
