@@ -4,6 +4,9 @@ import Link from 'next/link';
 import { store, pastReservations } from '@/data/dummyData';
 
 const upcomingReservation = pastReservations.find((r) => r.status === 'upcoming');
+const MAP_EMBED_SRC =
+  process.env.NEXT_PUBLIC_MAP_EMBED_SRC?.trim() ??
+  'https://www.google.com/maps?q=Tokyo+Station&output=embed';
 
 function InfoRow({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
@@ -27,43 +30,58 @@ export default function HomePage() {
 
       <div className="px-4 py-5 space-y-4">
         {/* 次回予約バナー */}
-        {upcomingReservation && (
-          <Link href="/history">
-            <div className="bg-[#F5E8DD] border border-[#E8C9A8] rounded-2xl p-4 flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-[#B5714A]/15 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-[#B5714A]" fill="none" viewBox="0 0 24 24"
-                  stroke="currentColor" strokeWidth={1.8}>
-                  <path strokeLinecap="round" strokeLinejoin="round"
-                    d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-[#B5714A] font-medium">次回のご予約</p>
-                <p className="text-sm font-bold text-[#2C1A0E] mt-0.5">
-                  {upcomingReservation.date.replace(/-/g, '/')}（{upcomingReservation.time}〜）
-                </p>
-                <p className="text-xs text-[#7A6555] truncate">
-                  {upcomingReservation.menuName} / {upcomingReservation.staffName}
-                </p>
-              </div>
-              <svg className="w-4 h-4 text-[#B5714A] flex-shrink-0" fill="none"
-                viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        <Link href={upcomingReservation ? '/history' : '/reservation'}>
+          <div
+            className={`rounded-2xl p-4 border ${
+              upcomingReservation
+                ? 'bg-[#F5E8DD] border-[#E8C9A8]'
+                : 'bg-[#FFFEFB] border-[#E8DDD2]'
+            } flex items-start gap-3`}
+          >
+            <div className="w-11 h-11 rounded-full bg-[#B5714A]/15 flex items-center justify-center flex-shrink-0">
+              <svg
+                className="w-6 h-6 text-[#B5714A]"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.8}
+              >
+                {upcomingReservation ? (
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5"
+                  />
+                ) : (
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                )}
               </svg>
             </div>
-          </Link>
-        )}
-
-        {/* 予約ボタン */}
-        <Link
-          href="/reservation"
-          className="flex w-full h-14 bg-[#B5714A] text-white rounded-2xl text-sm font-bold items-center justify-center gap-2 active:scale-[0.98] transition-all hover:bg-[#9A5C38]"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24"
-            stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
-          予約する
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-[#B5714A] font-medium">{upcomingReservation ? '次回のご予約' : '予約をしてみませんか'}</p>
+              {upcomingReservation ? (
+                <>
+                  <p className="text-lg font-bold text-[#2C1A0E] mt-1 leading-tight">
+                    {upcomingReservation.date.replace(/-/g, '/')}（{upcomingReservation.time}〜）
+                  </p>
+                  <p className="text-xs text-[#7A6555] truncate mt-1">
+                    {upcomingReservation.menuName} / {upcomingReservation.staffName}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm font-bold text-[#2C1A0E] mt-1 leading-tight">
+                  空き状況を見て予約できます
+                </p>
+              )}
+            </div>
+            <svg className="w-4 h-4 text-[#B5714A] flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </div>
         </Link>
 
         {/* 店舗情報カード */}
@@ -95,6 +113,30 @@ export default function HomePage() {
               icon={<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" /></svg>}
               text={`定休日：${store.holiday}`}
             />
+          </div>
+        </div>
+
+        {/* Googleマップ（東京のサンプル） */}
+        <div className="bg-[#FFFEFB] rounded-2xl border border-[#E8DDD2] overflow-hidden">
+          <div className="px-4 py-3 border-b border-[#F0E9E0] bg-[#FDF5EF]">
+            <p className="text-xs font-bold text-[#7A3E1E]">アクセス</p>
+          </div>
+          <div className="p-3">
+            <div className="rounded-xl overflow-hidden border border-[#E8DDD2] bg-white">
+              <iframe
+                title="Google Maps（サンプル）"
+                src={MAP_EMBED_SRC}
+                width="600"
+                height="450"
+                style={{ border: 0, width: '100%', height: 220, display: 'block' }}
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+                allowFullScreen
+              />
+            </div>
+            <p className="text-[10px] text-[#B0A090] mt-2">
+              埋め込みは `.env.local` の `NEXT_PUBLIC_MAP_EMBED_SRC` がある場合はそれを優先します。
+            </p>
           </div>
         </div>
 
