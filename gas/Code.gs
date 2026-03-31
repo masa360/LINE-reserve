@@ -151,6 +151,12 @@ function handleRequest_(query, body) {
       var lineUserId = (body && body.lineUserId) || (query && query.lineUserId) || '';
       var customerName = (body && body.customerName) || (query && query.customerName) || '';
       var limit = parseInt((body && body.limit) || (query && query.limit) || '30', 10);
+      if (!String(lineUserId || '').trim() && !String(customerName || '').trim()) {
+        return jsonResponse_(400, {
+          success: false,
+          error: 'lineUserId または customerName のどちらかが必要です',
+        });
+      }
       var reservations = getReservations_(lineUserId, customerName, limit);
       return jsonResponse_(200, { success: true, reservations: reservations });
     }
@@ -565,8 +571,19 @@ function getReservations_(lineUserId, customerName, limit) {
 
     var evLineUserId = extractDescField_(ev, 'lineUserId');
     var evCustomerName = extractDescField_(ev, 'customerName');
-    if (uid && evLineUserId && evLineUserId !== uid) continue;
-    if (!uid && cname && evCustomerName && evCustomerName !== cname) continue;
+    // LINE userId 優先: 一致すれば同一LINE内の予約すべて（親アカで子の予約も含む）
+    if (uid) {
+      if (evLineUserId) {
+        if (evLineUserId !== uid) continue;
+      } else {
+        // レガシー（lineUserId 未保存の予約）: お客様名で絞り込み
+        if (!cname || !evCustomerName || evCustomerName !== cname) continue;
+      }
+    } else if (cname) {
+      if (evCustomerName && evCustomerName !== cname) continue;
+    } else {
+      continue;
+    }
     rows.push(buildReservationFromEvent_(ev));
   }
 
@@ -594,6 +611,7 @@ function cancelReservation_(body) {
   var staffName = String(body.staffName || '').trim();
   var menuName = String(body.menuName || '').trim();
   var customerName = String(body.customerName || '').trim();
+  var requestLineUserId = String((body && body.lineUserId) || '').trim();
 
   if (!dateStr || !timeStr) {
     throw new Error('date と time は必須です');
@@ -632,6 +650,22 @@ function cancelReservation_(body) {
 
   if (!target) {
     throw new Error('取消対象の予約が見つかりませんでした');
+  }
+
+  if (requestLineUserId) {
+    var ownerUid = extractDescField_(target, 'lineUserId');
+    if (ownerUid && ownerUid !== requestLineUserId) {
+      return {
+        success: false,
+        error: 'この予約をオンラインで取り消すことはできません（別のLINEアカウントの予約です）。',
+      };
+    }
+    if (!ownerUid && customerName) {
+      var evCust = extractDescField_(target, 'customerName');
+      if (evCust && evCust !== customerName) {
+        return { success: false, error: '予約情報が一致しません。店舗へお問い合わせください。' };
+      }
+    }
   }
 
   var prevTitle = target.getTitle() || '';

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import StepBar from '@/components/StepBar';
 import { useReservation } from '@/app/context/ReservationContext';
+import { useLiff } from '@/app/context/LiffContext';
 import { createReservationOnGas } from '@/lib/reservationApi';
 import { buildReservationTotals } from '@/lib/reservationTotals';
 
@@ -26,6 +27,7 @@ function formatDate(dateStr: string): string {
 
 export default function ReservationStep3() {
   const router = useRouter();
+  const { profile } = useLiff();
   const { state, dispatch } = useReservation();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
@@ -74,7 +76,8 @@ export default function ReservationStep3() {
       date,
       time,
       notes: state.notes,
-      lineUserId: '',
+      lineUserId: profile?.userId ?? '',
+      lineDisplayName: profile?.displayName ?? '',
     });
     setIsSubmitting(false);
 

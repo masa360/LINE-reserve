@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useReservation } from '@/app/context/ReservationContext';
+import { useLiff } from '@/app/context/LiffContext';
 import { currentUser, menus, pastReservations, staffList } from '@/data/dummyData';
 import { cancelReservationOnGas, fetchReservationsFromGas } from '@/lib/reservationApi';
 import type { PastReservation } from '@/types';
@@ -41,6 +42,7 @@ function StatusBadge({ status }: { status: PastReservation['status'] }) {
 
 export default function HistoryPage() {
   const router = useRouter();
+  const { profile } = useLiff();
   const { dispatch } = useReservation();
   const [reservations, setReservations] = useState<PastReservation[]>(pastReservations);
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
@@ -84,10 +86,17 @@ export default function HistoryPage() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const result = await fetchReservationsFromGas({
-        customerName: currentUser.name,
-        limit: 50,
-      });
+      const lineUserId = profile?.userId?.trim() ?? '';
+      const result = await fetchReservationsFromGas(
+        lineUserId
+          ? {
+              lineUserId,
+              customerName:
+                profile?.displayName?.trim() || currentUser.name,
+              limit: 50,
+            }
+          : { customerName: currentUser.name, limit: 50 },
+      );
       if (!alive) return;
       if (result.ok && result.reservations.length > 0) {
         setReservations(result.reservations);
@@ -97,7 +106,7 @@ export default function HistoryPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [profile?.userId, profile?.displayName]);
 
   const handleCancel = async (res: PastReservation) => {
     if (!canCancelOnline(res, new Date())) {
@@ -112,11 +121,13 @@ export default function HistoryPage() {
 
     setCancellingId(res.id);
     const result = await cancelReservationOnGas({
+      eventId: res.id,
       date: res.date,
       time: res.time,
       staffName: res.staffName,
       menuName: res.menuName,
-      customerName: currentUser.name,
+      customerName: res.customerName?.trim() || currentUser.name,
+      lineUserId: profile?.userId ?? '',
     });
     setCancellingId(null);
 
@@ -199,6 +210,9 @@ export default function HistoryPage() {
                 <div className="h-px bg-[#F0E9E0] my-3" />
                 <div className="space-y-1.5">
                   {[
+                    ...(res.customerName
+                      ? [{ label: 'お客様名', value: res.customerName } as const]
+                      : []),
                     { label: 'メニュー', value: res.menuName },
                     { label: '担当',    value: res.staffName },
                     { label: '料金',    value: formatPrice(res.price) },
@@ -231,6 +245,9 @@ export default function HistoryPage() {
                   <div className="flex items-start justify-between mb-2">
                     <div>
                       <p className="text-xs text-[#B0A090]">{formatDate(res.date)} {res.time}</p>
+                      {res.customerName && (
+                        <p className="text-[10px] text-[#7A6555] mt-0.5">お客様：{res.customerName}</p>
+                      )}
                       <p className="text-sm font-semibold text-[#2C1A0E] mt-0.5">{res.menuName}</p>
                     </div>
                     <StatusBadge status={res.status} />

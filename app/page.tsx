@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { currentUser, store, pastReservations } from '@/data/dummyData';
+import { useLiff } from '@/app/context/LiffContext';
+import { currentUser, store } from '@/data/dummyData';
 import { fetchReservationsFromGas } from '@/lib/reservationApi';
 import type { PastReservation } from '@/types';
 
@@ -20,18 +21,34 @@ function InfoRow({ icon, text }: { icon: React.ReactNode; text: string }) {
 }
 
 export default function HomePage() {
-  const [upcomingReservation, setUpcomingReservation] = useState<PastReservation | undefined>(
-    () => pastReservations.find((r) => r.status === 'upcoming'),
-  );
+  const { profile } = useLiff();
+  /** ダミーデータは使わない。取得完了までは null（読み込み中） */
+  const [upcomingReservation, setUpcomingReservation] = useState<
+    PastReservation | undefined | null
+  >(null);
+  const [upcomingLoadError, setUpcomingLoadError] = useState(false);
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const result = await fetchReservationsFromGas({
-        customerName: currentUser.name,
-        limit: 10,
-      });
-      if (!alive || !result.ok) return;
+      setUpcomingLoadError(false);
+      const lineUserId = profile?.userId?.trim() ?? '';
+      const result = await fetchReservationsFromGas(
+        lineUserId
+          ? {
+              lineUserId,
+              customerName:
+                profile?.displayName?.trim() || currentUser.name,
+              limit: 10,
+            }
+          : { customerName: currentUser.name, limit: 10 },
+      );
+      if (!alive) return;
+      if (!result.ok) {
+        setUpcomingReservation(undefined);
+        setUpcomingLoadError(true);
+        return;
+      }
       const upcoming = result.reservations
         .filter((r) => r.status === 'upcoming')
         .sort((a, b) => (a.date + a.time > b.date + b.time ? 1 : -1))[0];
@@ -40,7 +57,7 @@ export default function HomePage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [profile?.userId, profile?.displayName]);
 
   return (
     <div className="min-h-full bg-[#FAF7F2]">
@@ -53,8 +70,16 @@ export default function HomePage() {
       </header>
 
       <div className="px-4 py-5 space-y-4">
-        {/* 次回予約バナー */}
-        <Link href={upcomingReservation ? '/history' : '/reservation'}>
+        {/* 次回予約バナー（GAS のみ。ダミー予約は表示しない） */}
+        <Link
+          href={
+            upcomingReservation === null
+              ? '/reservation'
+              : upcomingReservation
+                ? '/history'
+                : '/reservation'
+          }
+        >
           <div
             className={`rounded-2xl p-4 border ${
               upcomingReservation
@@ -86,19 +111,36 @@ export default function HomePage() {
               </svg>
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-[#B5714A] font-medium">{upcomingReservation ? '次回のご予約' : '予約をしてみませんか'}</p>
-              {upcomingReservation ? (
+              <p className="text-xs text-[#B5714A] font-medium">
+                {upcomingReservation === null
+                  ? '次回予約を確認中…'
+                  : upcomingReservation
+                    ? '次回のご予約'
+                    : upcomingLoadError
+                      ? '予約情報を読み込めませんでした'
+                      : '予約をしてみませんか'}
+              </p>
+              {upcomingReservation === null ? (
+                <p className="text-sm text-[#7A6555] mt-1 leading-relaxed">
+                  しばらくお待ちください
+                </p>
+              ) : upcomingReservation ? (
                 <>
                   <p className="text-lg font-bold text-[#2C1A0E] mt-1 leading-tight">
                     {upcomingReservation.date.replace(/-/g, '/')}（{upcomingReservation.time}〜）
                   </p>
                   <p className="text-xs text-[#7A6555] truncate mt-1">
+                    {upcomingReservation.customerName
+                      ? `${upcomingReservation.customerName}様 / `
+                      : ''}
                     {upcomingReservation.menuName} / {upcomingReservation.staffName}
                   </p>
                 </>
               ) : (
                 <p className="text-sm font-bold text-[#2C1A0E] mt-1 leading-tight">
-                  空き状況を見て予約できます
+                  {upcomingLoadError
+                    ? '通信状況を確認のうえ、しばらくしてから開き直してください'
+                    : '空き状況を見て予約できます'}
                 </p>
               )}
             </div>

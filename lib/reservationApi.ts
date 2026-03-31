@@ -29,6 +29,8 @@ export interface ReservationListItemApi {
   time: string;
   menuName: string;
   staffName: string;
+  /** 予約フォームのお客様名（親LINEで子の名義のときなど） */
+  customerName?: string;
   price: number;
   status: 'completed' | 'upcoming' | 'cancelled';
 }
@@ -141,6 +143,8 @@ export async function cancelReservationOnGas(params: {
   staffName?: string;
   menuName?: string;
   customerName?: string;
+  /** LIFF ログイン時は必須に近い（他人予約の取消防止） */
+  lineUserId?: string;
 }): Promise<{ success: boolean; error?: string; requirePhoneCall?: boolean }> {
   const { ok, data } = await callReservationApi<CancelReservationApiResponse>({
     action: 'cancelReservation',
@@ -150,6 +154,7 @@ export async function cancelReservationOnGas(params: {
     staffName: params.staffName ?? '',
     menuName: params.menuName ?? '',
     customerName: params.customerName ?? '',
+    lineUserId: params.lineUserId ?? '',
   });
 
   if (ok && data.success) {
@@ -169,17 +174,24 @@ export async function cancelReservationOnGas(params: {
 }
 
 export async function fetchReservationsFromGas(params: {
-  customerName: string;
+  /** LIFF 未接続時のみ主キー。LINE接続時は lineUserId を優先 */
+  customerName?: string;
   lineUserId?: string;
   limit?: number;
 }): Promise<
   | { ok: true; reservations: ReservationListItemApi[] }
   | { ok: false; error: string }
 > {
+  const customerName = params.customerName ?? '';
+  const lineUserId = params.lineUserId ?? '';
+  if (!String(customerName).trim() && !String(lineUserId).trim()) {
+    return { ok: false, error: 'lineUserId または customerName が必要です' };
+  }
+
   const { ok, data } = await callReservationApi<GetReservationsApiResponse>({
     action: 'getReservations',
-    customerName: params.customerName,
-    lineUserId: params.lineUserId ?? '',
+    customerName,
+    lineUserId,
     limit: params.limit ?? 30,
   });
 

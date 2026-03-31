@@ -78,6 +78,8 @@ export interface PastReservation {
   time: string; // "11:00"
   menuName: string;
   staffName: string;
+  /** 予約フォームに入力した来店者名（親LINEで子の名前など） */
+  customerName?: string;
   price: number;
   status: 'completed' | 'upcoming' | 'cancelled';
 }
