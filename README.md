@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LINE LIFF 予約アプリ（美容室）
 
-## Getting Started
+Next.js（App Router）+ Tailwind CSS + Google Apps Script（カレンダー／スプレッドシート）+ **LINE LIFF**。
 
-First, run the development server:
+## 開発
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+ブラウザで [http://localhost:3000](http://localhost:3000) を開きます。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 環境変数
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`.env.example` をコピーして `.env.local` を作成してください。
 
-## Learn More
+| 変数 | 必須 | 説明 |
+|------|------|------|
+| `GAS_WEBAPP_URL` | 本番では推奨 | GAS ウェブアプリの URL（`/exec`） |
+| `NEXT_PUBLIC_LIFF_ID` | LINE 連携時 | LINE Developers の LIFF ID |
 
-To learn more about Next.js, take a look at the following resources:
+## Vercel デプロイ × LINE 連携
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+**手順の全文は [`docs/DEPLOY_VERCEL_LINE.md`](./docs/DEPLOY_VERCEL_LINE.md) を参照してください。**
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+ざっくり流れ:
 
-## Deploy on Vercel
+1. GitHub に push 済みのリポジトリを [Vercel](https://vercel.com/) で Import
+2. 環境変数 `GAS_WEBAPP_URL` と `NEXT_PUBLIC_LIFF_ID` を設定してデプロイ
+3. LINE Developers で LIFF を作成し、**Endpoint URL** に Vercel の URL（`https://...`）を登録
+4. LIFF URL（`https://liff.line.me/＜LIFF_ID＞`）を LINE のメニュー等に貼る
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## その他
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- GAS コード: `gas/Code.gs`
+- プロキシ API: `app/api/reservations/route.ts`

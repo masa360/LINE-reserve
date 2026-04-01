@@ -11,8 +11,10 @@ import {
   staffList,
   generateTimeSlots,
   unavailableSlots,
+  staffShiftHours,
 } from '@/data/dummyData';
 import { fetchAvailabilityFromGas } from '@/lib/reservationApi';
+import { buildReservationTotals } from '@/lib/reservationTotals';
 import type { Staff, TimeSlot } from '@/types';
 
 /** 端末のローカル日付を YYYY-MM-DD に（toISOString の日付ずれを防ぐ） */
@@ -40,19 +42,36 @@ function generateDates(): { dateStr: string; label: string; dayOfWeek: string }[
 
 const DATES = generateDates();
 
+function withinShift(time: string, start: string, end: string): boolean {
+  return time >= start && time < end;
+}
+
+function applyShiftToSlots(slots: TimeSlot[], staffId: string): TimeSlot[] {
+  const shift = staffShiftHours[staffId] ?? staffShiftHours['staff-00'];
+  return slots
+    .filter((slot) => withinShift(slot.time, shift.start, shift.end))
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+
 function dummySlotsForStaff(staffId: string): TimeSlot[] {
   const key = staffId as keyof typeof unavailableSlots;
   const blocked = unavailableSlots[key] ?? [];
-  return generateTimeSlots(blocked);
+  const shift = staffShiftHours[staffId] ?? staffShiftHours['staff-00'];
+  return generateTimeSlots(blocked, shift.start, shift.end);
 }
 
 export default function ReservationStep2() {
   const router = useRouter();
   const { state, dispatch } = useReservation();
 
-  const selectedStaffId = state.selectedStaff?.id ?? 'staff-00';
+  const selectedStaffId = state.selectedStaff?.id ?? 'staff-01';
   const selectedDate = state.selectedDate ?? DATES[0].dateStr;
-  const durationMinutes = state.selectedMenu?.duration ?? 60;
+  const totals = buildReservationTotals(
+    state.selectedMenu,
+    state.selectedStyleMenu ?? null,
+    state.selectedCareMenu ?? null,
+  );
+  const durationMinutes = totals.totalDuration > 0 ? totals.totalDuration : 60;
 
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(() =>
     dummySlotsForStaff(selectedStaffId),
@@ -72,7 +91,7 @@ export default function ReservationStep2() {
     });
 
     if (result.ok) {
-      setTimeSlots(result.slots);
+      setTimeSlots(applyShiftToSlots(result.slots, selectedStaffId));
       setUsingDemoSlots(false);
     } else {
       setTimeSlots(dummySlotsForStaff(selectedStaffId));
@@ -82,6 +101,13 @@ export default function ReservationStep2() {
 
     setSlotsLoading(false);
   }, [selectedDate, selectedStaffId, durationMinutes]);
+
+  useEffect(() => {
+    if (!state.selectedStaff) {
+      const defaultStaff = staffList.find((s) => s.id === 'staff-01') ?? staffList[0];
+      dispatch({ type: 'SET_STAFF', payload: defaultStaff });
+    }
+  }, [dispatch, state.selectedStaff]);
 
   useEffect(() => {
     void loadSlots();
@@ -129,7 +155,7 @@ export default function ReservationStep2() {
               <StaffCard
                 key={staff.id}
                 staff={staff}
-                isSelected={state.selectedStaff ? state.selectedStaff.id === staff.id : staff.id === 'staff-00'}
+                isSelected={state.selectedStaff ? state.selectedStaff.id === staff.id : staff.id === 'staff-01'}
                 onSelect={handleSelectStaff}
               />
             ))}
@@ -194,10 +220,12 @@ export default function ReservationStep2() {
           )}
 
           {slotsLoading && (
-            <p className="text-xs text-[#B0A090] mb-2">空き状況を読み込み中…</p>
+            <p className="text-xs text-[#B5714A] font-medium mb-2">空き状況を更新中…</p>
           )}
 
-          <div className="grid grid-cols-4 gap-2">
+          <div
+            className={`grid grid-cols-4 gap-2 transition-opacity ${slotsLoading ? 'opacity-80' : ''}`}
+          >
             {timeSlots.map((slot) => (
               <TimeSlotButton
                 key={slot.time}
@@ -205,6 +233,7 @@ export default function ReservationStep2() {
                 available={slot.available}
                 isSelected={state.selectedTime === slot.time}
                 onSelect={handleSelectTime}
+                interactionDisabled={slotsLoading}
               />
             ))}
           </div>

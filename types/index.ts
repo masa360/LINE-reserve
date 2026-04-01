@@ -1,7 +1,7 @@
 // ============================================================
 // メニュー関連
 // ============================================================
-export type MenuCategory = 'hair' | 'mens';
+export type MenuCategory = 'cut' | 'colorperm' | 'care' | 'mens' | 'hair' | 'bridal';
 
 export interface Menu {
   id: string;
@@ -37,7 +37,10 @@ export interface TimeSlot {
 // 予約状態（Context で保持）
 // ============================================================
 export interface ReservationState {
+  selectedVenue?: Venue | null;
   selectedMenu: Menu | null;
+  selectedStyleMenu?: Menu | null;
+  selectedCareMenu?: Menu | null;
   selectedStaff: Staff | null;
   selectedDate: string | null; // "2026-03-21"
   selectedTime: string | null; // "09:00"
@@ -46,12 +49,24 @@ export interface ReservationState {
 }
 
 export type ReservationAction =
+  | { type: 'SET_VENUE'; payload: Venue }
   | { type: 'SET_MENU'; payload: Menu }
+  | { type: 'SET_STYLE_MENU'; payload: Menu | null }
+  | { type: 'SET_CARE_MENU'; payload: Menu | null }
   | { type: 'SET_STAFF'; payload: Staff }
   | { type: 'SET_DATE'; payload: string }
   | { type: 'SET_TIME'; payload: string | null }
   | { type: 'SET_CUSTOMER_NAME'; payload: string }
   | { type: 'SET_NOTES'; payload: string }
+  | {
+      type: 'APPLY_REBOOK_PATCH';
+      payload: {
+        selectedMenu: Menu;
+        selectedStyleMenu: Menu | null;
+        selectedCareMenu: Menu | null;
+        selectedStaff: Staff;
+      };
+    }
   | { type: 'RESET' };
 
 // ============================================================
@@ -63,6 +78,8 @@ export interface PastReservation {
   time: string; // "11:00"
   menuName: string;
   staffName: string;
+  /** 予約フォームに入力した来店者名（親LINEで子の名前など） */
+  customerName?: string;
   price: number;
   status: 'completed' | 'upcoming' | 'cancelled';
 }
@@ -77,4 +94,11 @@ export interface User {
   points: number;
   rank: 'STANDARD' | 'SILVER' | 'GOLD' | 'PLATINUM';
   visitCount: number;
+}
+
+export interface Venue {
+  id: string;
+  name: string;
+  addressLines: string[];
+  imageUrl?: string;
 }

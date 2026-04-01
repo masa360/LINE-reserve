@@ -3,9 +3,9 @@ interface StepBarProps {
 }
 
 const steps = [
-  { number: 1, label: 'メニュー選択' },
+  { number: 1, label: '施術メニュー' },
   { number: 2, label: 'スタッフ・時間' },
-  { number: 3, label: '予約確認' },
+  { number: 3, label: '最終確認' },
 ];
 
 export default function StepBar({ currentStep }: StepBarProps) {

@@ -10,6 +10,8 @@ import type { ReservationState, ReservationAction } from '@/types';
 
 const initialState: ReservationState = {
   selectedMenu: null,
+  selectedStyleMenu: null,
+  selectedCareMenu: null,
   selectedStaff: null,
   selectedDate: null,
   selectedTime: null,
@@ -23,7 +25,11 @@ function reservationReducer(
 ): ReservationState {
   switch (action.type) {
     case 'SET_MENU':
-      return { ...state, selectedMenu: action.payload };
+      return { ...state, selectedMenu: action.payload, selectedTime: null };
+    case 'SET_STYLE_MENU':
+      return { ...state, selectedStyleMenu: action.payload, selectedTime: null };
+    case 'SET_CARE_MENU':
+      return { ...state, selectedCareMenu: action.payload, selectedTime: null };
     case 'SET_STAFF':
       return { ...state, selectedStaff: action.payload, selectedTime: null };
     case 'SET_DATE':
@@ -34,6 +40,16 @@ function reservationReducer(
       return { ...state, customerName: action.payload };
     case 'SET_NOTES':
       return { ...state, notes: action.payload };
+    case 'APPLY_REBOOK_PATCH':
+      return {
+        ...state,
+        selectedMenu: action.payload.selectedMenu,
+        selectedStyleMenu: action.payload.selectedStyleMenu,
+        selectedCareMenu: action.payload.selectedCareMenu,
+        selectedStaff: action.payload.selectedStaff,
+        selectedDate: null,
+        selectedTime: null,
+      };
     case 'RESET':
       return initialState;
     default:

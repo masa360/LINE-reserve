@@ -4,7 +4,9 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import StepBar from '@/components/StepBar';
 import { useReservation } from '@/app/context/ReservationContext';
+import { useLiff } from '@/app/context/LiffContext';
 import { createReservationOnGas } from '@/lib/reservationApi';
+import { buildReservationTotals } from '@/lib/reservationTotals';
 
 function formatPrice(price: number): string {
   return `¥${price.toLocaleString('ja-JP')}`;
@@ -25,6 +27,7 @@ function formatDate(dateStr: string): string {
 
 export default function ReservationStep3() {
   const router = useRouter();
+  const { profile } = useLiff();
   const { state, dispatch } = useReservation();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
@@ -32,6 +35,11 @@ export default function ReservationStep3() {
   /** 確定後の担当名（指名なしのとき GAS が割り当てたスタッフ） */
   const [confirmedStaffName, setConfirmedStaffName] = useState<string | null>(
     null,
+  );
+  const totals = buildReservationTotals(
+    state.selectedMenu,
+    state.selectedStyleMenu ?? null,
+    state.selectedCareMenu ?? null,
   );
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -60,15 +68,16 @@ export default function ReservationStep3() {
     setIsSubmitting(true);
     const result = await createReservationOnGas({
       customerName: state.customerName.trim(),
-      menuName: menu.name,
-      durationMinutes: menu.duration,
-      price: menu.price,
+      menuName: totals.menuNameForApi,
+      durationMinutes: totals.totalDuration,
+      price: totals.totalPrice,
       staffId,
       staffName,
       date,
       time,
       notes: state.notes,
-      lineUserId: '',
+      lineUserId: profile?.userId ?? '',
+      lineDisplayName: profile?.displayName ?? '',
     });
     setIsSubmitting(false);
 
@@ -107,11 +116,24 @@ export default function ReservationStep3() {
 
         <div className="w-full mt-6 bg-[#FFFEFB] rounded-2xl p-4 border border-[#E8DDD2] text-left">
           <p className="text-xs text-[#B5714A] font-bold mb-3">ご予約内容</p>
+          {totals.lineItems.length > 0 && (
+            <div className="mb-3 rounded-xl border border-[#E8DDD2] bg-[#FAF7F2] px-3 py-2">
+              <p className="text-[10px] font-bold text-[#7A6555] mb-1">施術内訳</p>
+              {totals.lineItems.map((item) => (
+                <div key={item.label} className="flex items-center justify-between text-xs">
+                  <span className="text-[#2C1A0E]">{item.label}</span>
+                  <span className="text-[#7A6555]">
+                    {formatPrice(item.price)} / {formatDuration(item.duration)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="space-y-2">
             {[
               { label: '日時', value: `${state.selectedDate ? formatDate(state.selectedDate) : '—'} ${state.selectedTime}` },
               { label: '担当', value: displayStaffName },
-              { label: 'メニュー', value: state.selectedMenu?.name ?? '—' },
+              { label: 'メニュー', value: totals.menuNameForApi || '—' },
             ].map((row) => (
               <div key={row.label} className="flex justify-between gap-2">
                 <span className="text-xs text-[#B0A090]">{row.label}</span>
@@ -198,13 +220,13 @@ export default function ReservationStep3() {
               </div>
               <div className="flex-1">
                 <p className="text-[10px] text-[#B0A090]">メニュー</p>
-                <p className="text-sm font-semibold text-[#2C1A0E]">{state.selectedMenu?.name ?? '未選択'}</p>
-                {state.selectedMenu && (
-                  <p className="text-xs text-[#7A6555]">{formatDuration(state.selectedMenu.duration)}</p>
+                <p className="text-sm font-semibold text-[#2C1A0E]">{totals.menuNameForApi || '未選択'}</p>
+                {totals.totalDuration > 0 && (
+                  <p className="text-xs text-[#7A6555]">{formatDuration(totals.totalDuration)}</p>
                 )}
               </div>
-              {state.selectedMenu && (
-                <p className="text-base font-bold text-[#B5714A]">{formatPrice(state.selectedMenu.price)}</p>
+              {totals.totalPrice > 0 && (
+                <p className="text-base font-bold text-[#B5714A]">{formatPrice(totals.totalPrice)}</p>
               )}
             </div>
             <div className="h-px bg-[#E8DDD2]" />
@@ -213,7 +235,7 @@ export default function ReservationStep3() {
             <div className="flex items-center justify-between">
               <span className="text-sm font-bold text-[#2C1A0E]">合計金額</span>
               <span className="text-lg font-bold text-[#B5714A]">
-                {state.selectedMenu ? formatPrice(state.selectedMenu.price) : '—'}
+                {totals.totalPrice > 0 ? formatPrice(totals.totalPrice) : '—'}
               </span>
             </div>
           </div>
