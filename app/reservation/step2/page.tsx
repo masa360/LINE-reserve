@@ -220,10 +220,12 @@ export default function ReservationStep2() {
           )}
 
           {slotsLoading && (
-            <p className="text-xs text-[#B0A090] mb-2">空き状況を読み込み中…</p>
+            <p className="text-xs text-[#B5714A] font-medium mb-2">空き状況を更新中…</p>
           )}
 
-          <div className="grid grid-cols-4 gap-2">
+          <div
+            className={`grid grid-cols-4 gap-2 transition-opacity ${slotsLoading ? 'opacity-80' : ''}`}
+          >
             {timeSlots.map((slot) => (
               <TimeSlotButton
                 key={slot.time}
@@ -231,6 +233,7 @@ export default function ReservationStep2() {
                 available={slot.available}
                 isSelected={state.selectedTime === slot.time}
                 onSelect={handleSelectTime}
+                interactionDisabled={slotsLoading}
               />
             ))}
           </div>

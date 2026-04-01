@@ -218,6 +218,8 @@ function getAvailability_(dateStr, staffId, durationMinutes) {
   var calendar = getCalendar_();
   var dayRange = getDayRange_(dateStr);
   var events = calendar.getEvents(dayRange.start, dayRange.end);
+  // 枠ごとに全イベントを走査しない（1回だけ有効予約を数値化 → 各枠は比較のみ）
+  var blocks = buildActiveReserveBlocks_(events);
 
   var slotStarts = buildSlotStarts_(dateStr);
   var slots = [];
@@ -237,7 +239,9 @@ function getAvailability_(dateStr, staffId, durationMinutes) {
       continue;
     }
 
-    var available = isSlotAvailable_(events, staffId, slotStart, slotEnd);
+    var rs = slotStart.getTime();
+    var re = slotEnd.getTime();
+    var available = isRangeFreeFromBlocks_(blocks, staffId, rs, re);
     slots.push({ time: formatTime_(slotStart), available: available });
   }
 
@@ -305,43 +309,74 @@ function pad2_(n) {
 }
 
 /**
- * 予約イベントのみを対象に重なり判定
+ * 予約作成時の1枠重なり判定（イベント配列は呼び出し側で1日分）
  */
 function isSlotAvailable_(events, staffId, rangeStart, rangeEnd) {
-  var reserveEvents = [];
-  for (var i = 0; i < events.length; i++) {
-    var ev = events[i];
-    if (isReserveEvent_(ev)) {
-      reserveEvents.push(ev);
-    }
-  }
-
-  if (staffId === STAFF_IDS.ANY) {
-    var busy1 = hasOverlapForStaff_(reserveEvents, STAFF_IDS.YAMAMOTO, rangeStart, rangeEnd);
-    var busy2 = hasOverlapForStaff_(reserveEvents, STAFF_IDS.OGAWA, rangeStart, rangeEnd);
-    return !(busy1 && busy2);
-  }
-
-  return !hasOverlapForStaff_(reserveEvents, staffId, rangeStart, rangeEnd);
+  var blocks = buildActiveReserveBlocks_(events);
+  return isRangeFreeFromBlocks_(blocks, staffId, rangeStart.getTime(), rangeEnd.getTime());
 }
 
-function hasOverlapForStaff_(events, staffId, rangeStart, rangeEnd) {
+/**
+ * カレンダーイベントから有効予約のみを一度パースし、ms 時刻で保持する
+ */
+function buildActiveReserveBlocks_(events) {
+  var blocks = [];
   for (var i = 0; i < events.length; i++) {
     var ev = events[i];
+    if (!isActiveReserveEvent_(ev)) continue;
     var sid = extractStaffId_(ev);
-    if (sid !== staffId) continue;
-    var es = ev.getStartTime();
-    var ee = ev.getEndTime();
-    if (es < rangeEnd && ee > rangeStart) {
-      return true;
-    }
+    if (!sid) continue;
+    blocks.push({
+      staffId: sid,
+      start: ev.getStartTime().getTime(),
+      end: ev.getEndTime().getTime(),
+    });
+  }
+  return blocks;
+}
+
+function hasOverlapBlocksForStaff_(blocks, staffId, rangeStartMs, rangeEndMs) {
+  for (var i = 0; i < blocks.length; i++) {
+    var b = blocks[i];
+    if (b.staffId !== staffId) continue;
+    if (b.start < rangeEndMs && b.end > rangeStartMs) return true;
   }
   return false;
+}
+
+/** 指名なしは両スタッフ枠がともに埋まっているとき不可 */
+function isRangeFreeFromBlocks_(blocks, staffId, rangeStartMs, rangeEndMs) {
+  if (staffId === STAFF_IDS.ANY) {
+    var busy1 = hasOverlapBlocksForStaff_(
+      blocks,
+      STAFF_IDS.YAMAMOTO,
+      rangeStartMs,
+      rangeEndMs,
+    );
+    var busy2 = hasOverlapBlocksForStaff_(blocks, STAFF_IDS.OGAWA, rangeStartMs, rangeEndMs);
+    return !(busy1 && busy2);
+  }
+  return !hasOverlapBlocksForStaff_(blocks, staffId, rangeStartMs, rangeEndMs);
 }
 
 function isReserveEvent_(ev) {
   var desc = ev.getDescription() || '';
   return desc.indexOf(RESERVE_MARKER) !== -1;
+}
+
+/**
+ * オンライン取消などで無効化された予約（枠は空きとして扱う）
+ */
+function isCancelledReserveEvent_(ev) {
+  var title = ev.getTitle() || '';
+  if (title.indexOf('[キャンセル]') !== -1) return true;
+  if (extractDescField_(ev, 'status') === 'cancelled') return true;
+  return false;
+}
+
+/** 空き判定・新規予約の重複チェック用（キャンセル済みは含めない） */
+function isActiveReserveEvent_(ev) {
+  return isReserveEvent_(ev) && !isCancelledReserveEvent_(ev);
 }
 
 function extractStaffId_(ev) {
@@ -407,10 +442,16 @@ function createReservation_(body) {
   }
 
   var title =
-    '[予約] ' + menuName + ' / ' + assignedStaffName + ' / ' + customerName;
+    '[予約] ' +
+    menuName +
+    ' ｜ 担当：' +
+    assignedStaffName +
+    ' ｜ お客様：' +
+    customerName;
 
   var description = buildDescription_({
     staffId: assignedStaffId,
+    staffName: assignedStaffName,
     customerName: customerName,
     menuName: menuName,
     price: price,
@@ -460,11 +501,14 @@ function resolveReservationLineDisplayName_(lineUserId, rawLineDisplayName) {
 }
 
 function pickAvailableStaff_(events, rangeStart, rangeEnd) {
+  var blocks = buildActiveReserveBlocks_(events);
+  var rs = rangeStart.getTime();
+  var re = rangeEnd.getTime();
   var tryOrder = [STAFF_IDS.YAMAMOTO, STAFF_IDS.OGAWA];
   for (var i = 0; i < tryOrder.length; i++) {
     var sid = tryOrder[i];
     if (!isWithinStaffShift_(sid, rangeStart, rangeEnd)) continue;
-    if (!hasOverlapForStaff_(filterReserveEvents_(events), sid, rangeStart, rangeEnd)) {
+    if (!hasOverlapBlocksForStaff_(blocks, sid, rs, re)) {
       return sid;
     }
   }
@@ -474,7 +518,7 @@ function pickAvailableStaff_(events, rangeStart, rangeEnd) {
 function filterReserveEvents_(events) {
   var out = [];
   for (var i = 0; i < events.length; i++) {
-    if (isReserveEvent_(events[i])) out.push(events[i]);
+    if (isActiveReserveEvent_(events[i])) out.push(events[i]);
   }
   return out;
 }
@@ -490,10 +534,67 @@ function parseDateTime_(dateStr, timeStr) {
   return new Date(y, mo - 1, d, h, m, 0);
 }
 
+function formatDurationJa_(minutes) {
+  var m = parseInt(minutes, 10);
+  if (isNaN(m) || m <= 0) return '—';
+  if (m < 60) return m + '分';
+  var h = Math.floor(m / 60);
+  var r = m % 60;
+  if (r === 0) return h + '時間';
+  return h + '時間' + r + '分';
+}
+
+function formatYen_(price) {
+  if (price === '' || price == null) return '—';
+  var n = parseInt(price, 10);
+  if (isNaN(n)) return '—';
+  return '¥' + n.toLocaleString('ja-JP');
+}
+
+function staffIdToDisplayName_(staffId) {
+  if (staffId === STAFF_IDS.YAMAMOTO) return '山本 宏美';
+  if (staffId === STAFF_IDS.OGAWA) return '小川 あずさ';
+  if (staffId === STAFF_IDS.ANY || staffId === 'staff-00') return '指名なし（自動割当）';
+  return String(staffId || '');
+}
+
+/**
+ * カレンダー本文：上部は人向け、下部は従来どおりキー:value（アプリ解析用）
+ */
 function buildDescription_(data) {
-  var lines = [
+  var staffLabel =
+    String(data.staffName || '').trim() ||
+    staffIdToDisplayName_(data.staffId) ||
+    String(data.staffId || '');
+  var notesJa = String(data.notes || '').trim();
+  if (!notesJa) notesJa = '（なし）';
+
+  var cust = String(data.customerName || '').trim() || '—';
+  var menu = String(data.menuName || '').trim() || '—';
+  var lineDisp = String(data.lineDisplayName || '').trim() || '—';
+  var lineUid = String(data.lineUserId || '').trim() || '—';
+
+  var human = [
+    '■ LINE予約（自動登録）',
+    '',
+    'お客様名（予約フォーム）　' + cust,
+    'LINEアカウント表示名　　　' + lineDisp,
+    'LINEユーザーID　　　　　　' + lineUid,
+    'メニュー　　　　　　　　　' + menu,
+    '所要時間　　　　　　　　　' + formatDurationJa_(data.durationMinutes),
+    '料金（目安）　　　　　　　' + formatYen_(data.price),
+    'ご要望・メモ　　　　　　　' + notesJa,
+    '担当スタッフ　　　　　　　' + staffLabel,
+    '',
+    '────────────────────────',
+    '※下記の英字「キー:値」の行は予約アプリ連携用です。削除しないでください。',
+    '',
+  ].join('\n');
+
+  var machine = [
     RESERVE_MARKER,
     'staffId:' + data.staffId,
+    'staffName:' + staffLabel,
     'customerName:' + data.customerName,
     'menuName:' + data.menuName,
     'price:' + data.price,
@@ -501,8 +602,9 @@ function buildDescription_(data) {
     'notes:' + data.notes,
     'lineUserId:' + data.lineUserId,
     'lineDisplayName:' + (data.lineDisplayName || ''),
-  ];
-  return lines.join('\n');
+  ].join('\n');
+
+  return human + machine;
 }
 
 function extractDescField_(ev, fieldName) {
@@ -521,17 +623,26 @@ function buildReservationFromEvent_(ev) {
   var title = ev.getTitle() || '';
   var menuName = extractDescField_(ev, 'menuName');
   var customerName = extractDescField_(ev, 'customerName');
+  var staffName = extractDescField_(ev, 'staffName');
   var priceRaw = extractDescField_(ev, 'price');
   var price = parseInt(priceRaw || '0', 10);
   if (isNaN(price)) price = 0;
-  var staffName = '';
-  if (title.indexOf(' / ') !== -1) {
-    var t = title.replace('[予約] ', '').replace('[キャンセル] ', '');
-    var parts = t.split(' / ');
-    // 形式: menu / staff / customer
-    if (parts.length >= 2) staffName = parts[1];
-    if (!menuName && parts.length >= 1) menuName = parts[0];
-    if (!customerName && parts.length >= 3) customerName = parts[2];
+  if (!staffName || !menuName || !customerName) {
+    if (title.indexOf(' / ') !== -1) {
+      var t = title.replace('[予約] ', '').replace('[キャンセル] ', '');
+      var parts = t.split(' / ');
+      if (parts.length >= 2 && !staffName) staffName = parts[1];
+      if (parts.length >= 1 && !menuName) menuName = parts[0];
+      if (parts.length >= 3 && !customerName) customerName = parts[2];
+    } else {
+      var stripped = title.replace(/^\[(?:予約|キャンセル)\]\s*/, '');
+      var tm = stripped.match(/^(.+?)\s*｜\s*担当：(.+?)\s*｜\s*お客様：(.+)$/);
+      if (tm) {
+        if (!menuName) menuName = tm[1].trim();
+        if (!staffName) staffName = tm[2].trim();
+        if (!customerName) customerName = tm[3].trim();
+      }
+    }
   }
 
   var status = 'upcoming';
@@ -670,13 +781,31 @@ function cancelReservation_(body) {
 
   var prevTitle = target.getTitle() || '';
   if (prevTitle.indexOf('[キャンセル]') !== 0) {
-    target.setTitle('[キャンセル] ' + prevTitle);
+    var bodyTitle = prevTitle.replace(/^\[予約\]\s*/, '');
+    target.setTitle('[キャンセル] ' + bodyTitle);
   }
+  var nowCancelledAt = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
   var prevDesc = target.getDescription() || '';
   if (prevDesc.indexOf('status:cancelled') === -1) {
-    var cancelledAt = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
-    target.setDescription(prevDesc + '\nstatus:cancelled\ncancelledAt:' + cancelledAt);
+    var cancelNote = [
+      '',
+      '────────────────────────',
+      '【キャンセル済み】',
+      '取消日時：' + nowCancelledAt + '（オンライン）',
+      '',
+    ].join('\n');
+    target.setDescription(
+      prevDesc + cancelNote + 'status:cancelled\ncancelledAt:' + nowCancelledAt,
+    );
   }
+
+  var cancelledAtForSheet =
+    extractDescField_(target, 'cancelledAt') || nowCancelledAt;
+  markSpreadsheetReservationCancelled_(
+    target.getId(),
+    cancelledAtForSheet,
+    target,
+  );
 
   return { success: true, eventId: target.getId() };
 }
@@ -705,6 +834,76 @@ function appendToSpreadsheet_(row) {
     row.notes,
     row.lineUserId,
     row.lineDisplayName || '',
+    '予約確定',
+    '',
+  ]);
+}
+
+/** 予約シートの列インデックス（1始まり） */
+var RESERVE_SHEET_COL = {
+  EVENT_ID: 2,
+  STATUS: 13,
+  CANCELLED_AT: 14,
+};
+
+/**
+ * キャンセル時: イベントIDが一致する行に ステータス・取消日時 を反映。
+ * 行が無い場合（ログ未連携の過去予約など）は取消情報だけの行を追記。
+ */
+function markSpreadsheetReservationCancelled_(eventId, cancelledAtStr, calendarEvent) {
+  var ssId = getSpreadsheetId_();
+  if (!ssId || !eventId) return;
+
+  var sheet = SpreadsheetApp.openById(ssId).getSheets()[0];
+  var lastRow = sheet.getLastRow();
+  var idCol = RESERVE_SHEET_COL.EVENT_ID;
+  var foundRow = 0;
+
+  if (lastRow >= 2) {
+    var ids = sheet.getRange(2, idCol, lastRow, idCol).getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(eventId).trim()) {
+        foundRow = i + 2;
+        break;
+      }
+    }
+  }
+
+  if (foundRow > 0) {
+    sheet.getRange(foundRow, RESERVE_SHEET_COL.STATUS).setValue('キャンセル');
+    sheet.getRange(foundRow, RESERVE_SHEET_COL.CANCELLED_AT).setValue(cancelledAtStr);
+    return;
+  }
+
+  var ev = calendarEvent;
+  var start = ev.getStartTime();
+  var dateStr = Utilities.formatDate(start, TZ, 'yyyy-MM-dd');
+  var timeStr = Utilities.formatDate(start, TZ, 'HH:mm');
+  var customerName = extractDescField_(ev, 'customerName');
+  var menuName = extractDescField_(ev, 'menuName');
+  var staffId = extractDescField_(ev, 'staffId');
+  var staffName = extractDescField_(ev, 'staffName');
+  if (!staffName) staffName = staffIdToDisplayName_(staffId);
+  var price = extractDescField_(ev, 'price');
+  var notes = extractDescField_(ev, 'notes');
+  var lineUserId = extractDescField_(ev, 'lineUserId');
+  var lineDisplayName = extractDescField_(ev, 'lineDisplayName');
+
+  sheet.appendRow([
+    cancelledAtStr,
+    eventId,
+    dateStr,
+    timeStr,
+    customerName,
+    menuName,
+    staffId,
+    staffName,
+    price,
+    notes,
+    lineUserId,
+    lineDisplayName || '',
+    'キャンセル',
+    cancelledAtStr,
   ]);
 }
 
@@ -737,7 +936,7 @@ function setupSpreadsheetHeader() {
     throw new Error('SPREADSHEET_ID が未設定です');
   }
   var sheet = SpreadsheetApp.openById(ssId).getSheets()[0];
-  sheet.getRange(1, 1, 1, 12).setValues([
+  sheet.getRange(1, 1, 1, 14).setValues([
     [
       '作成日時',
       'イベントID',
@@ -751,6 +950,8 @@ function setupSpreadsheetHeader() {
       'ご要望',
       'LINEユーザーID',
       'LINE表示名',
+      'ステータス',
+      '取消日時',
     ],
   ]);
 }
