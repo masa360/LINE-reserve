@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useReservation } from '@/app/context/ReservationContext';
 import { useLiff } from '@/app/context/LiffContext';
-import { currentUser, menus, pastReservations, staffList } from '@/data/dummyData';
+import { currentUser, menus, staffList } from '@/data/dummyData';
 import { cancelReservationOnGas, fetchReservationsFromGas } from '@/lib/reservationApi';
 import type { PastReservation } from '@/types';
 
@@ -44,12 +44,13 @@ export default function HistoryPage() {
   const router = useRouter();
   const { profile } = useLiff();
   const { dispatch } = useReservation();
-  const [reservations, setReservations] = useState<PastReservation[]>(pastReservations);
+  const [reservations, setReservations] = useState<PastReservation[]>([]);
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [loadingReservations, setLoadingReservations] = useState(true);
+  const todayStr = new Date().toLocaleDateString('sv-SE');
   const upcoming = useMemo(
-    () => reservations.filter((r) => r.status === 'upcoming'),
-    [reservations],
+    () => reservations.filter((r) => r.status === 'upcoming' && r.date >= todayStr),
+    [reservations, todayStr],
   );
   const past = useMemo(
     () => reservations.filter((r) => r.status !== 'upcoming'),
@@ -98,7 +99,7 @@ export default function HistoryPage() {
           : { customerName: currentUser.name, limit: 50 },
       );
       if (!alive) return;
-      if (result.ok && result.reservations.length > 0) {
+      if (result.ok) {
         setReservations(result.reservations);
       }
       setLoadingReservations(false);

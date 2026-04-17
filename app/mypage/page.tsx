@@ -1,7 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { currentUser, pastReservations } from '@/data/dummyData';
+import { useEffect, useState } from 'react';
+import { currentUser } from '@/data/dummyData';
+import { useLiff } from '@/app/context/LiffContext';
+import { fetchReservationsFromGas } from '@/lib/reservationApi';
+import type { PastReservation } from '@/types';
 
 function Barcode() {
   const bars = [3, 1, 2, 1, 3, 1, 1, 2, 1, 3, 2, 1, 1, 3, 1, 2, 2, 1, 3, 1, 2, 1, 1, 3, 2, 1, 3, 1, 2, 1];
@@ -48,8 +52,27 @@ function MenuLink({ href, icon, title, subtitle, badge }: MenuLinkProps) {
 
 export default function MyPage() {
   const user = currentUser;
-  const upcomingCount  = pastReservations.filter((r) => r.status === 'upcoming').length;
-  const completedCount = pastReservations.filter((r) => r.status === 'completed').length;
+  const { profile } = useLiff();
+  const [reservations, setReservations] = useState<PastReservation[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const lineUserId = profile?.userId?.trim() ?? '';
+      const result = await fetchReservationsFromGas(
+        lineUserId
+          ? { lineUserId, customerName: profile?.displayName?.trim() || currentUser.name, limit: 50 }
+          : { customerName: currentUser.name, limit: 50 },
+      );
+      if (!alive) return;
+      if (result.ok) setReservations(result.reservations);
+    })();
+    return () => { alive = false; };
+  }, [profile?.userId, profile?.displayName]);
+
+  const todayStr = new Date().toLocaleDateString('sv-SE');
+  const upcomingCount  = reservations.filter((r) => r.status === 'upcoming' && r.date >= todayStr).length;
+  const completedCount = reservations.filter((r) => r.status === 'completed').length;
 
   return (
     <div className="min-h-full bg-[#FAF7F2]">
