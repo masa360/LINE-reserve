@@ -50,6 +50,10 @@ export default function ReservationStep3() {
     dispatch({ type: 'SET_NOTES', payload: e.target.value });
   };
 
+  const handleBirthdayChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    dispatch({ type: 'SET_BIRTHDAY', payload: e.target.value });
+  };
+
   const handleSubmit = async () => {
     setSubmitError(null);
 
@@ -76,6 +80,7 @@ export default function ReservationStep3() {
       date,
       time,
       notes: state.notes,
+      birthday: state.birthday,
       lineUserId: profile?.userId ?? '',
       lineDisplayName: profile?.displayName ?? '',
     });
@@ -250,6 +255,23 @@ export default function ReservationStep3() {
           <input type="text" value={state.customerName} onChange={handleNameChange}
             placeholder="山田 太郎"
             className="w-full h-12 px-4 border-2 border-[#E8DDD2] rounded-xl text-sm text-[#2C1A0E] bg-[#FFFEFB] focus:outline-none focus:border-[#B5714A] transition-colors placeholder:text-[#C4B4A4]" />
+        </div>
+
+        {/* 誕生日 */}
+        <div>
+          <label className="block text-sm font-bold text-[#2C1A0E] mb-2">
+            誕生日
+            <span className="text-[#B0A090] ml-1 text-xs font-normal">任意</span>
+          </label>
+          <input
+            type="text"
+            value={state.birthday}
+            onChange={handleBirthdayChange}
+            placeholder="例: 4/17"
+            inputMode="numeric"
+            className="w-full h-12 px-4 border-2 border-[#E8DDD2] rounded-xl text-sm text-[#2C1A0E] bg-[#FFFEFB] focus:outline-none focus:border-[#B5714A] transition-colors placeholder:text-[#C4B4A4]"
+          />
+          <p className="text-[10px] text-[#B0A090] mt-1">月/日の形式でご入力ください（例: 4/17）</p>
         </div>
 
         {/* ご要望 */}

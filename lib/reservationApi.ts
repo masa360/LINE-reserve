@@ -102,6 +102,7 @@ export async function createReservationOnGas(params: {
   date: string;
   time: string;
   notes: string;
+  birthday?: string;
   lineUserId?: string;
   lineDisplayName?: string;
 }): Promise<{ success: boolean; error?: string; assignedStaffName?: string; eventId?: string }> {
@@ -116,6 +117,7 @@ export async function createReservationOnGas(params: {
     date: params.date,
     time: params.time,
     notes: params.notes,
+    birthday: params.birthday ?? '',
     lineUserId: params.lineUserId ?? '',
     lineDisplayName: params.lineDisplayName ?? '',
   });

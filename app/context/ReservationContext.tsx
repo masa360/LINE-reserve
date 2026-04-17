@@ -17,6 +17,7 @@ const initialState: ReservationState = {
   selectedTime: null,
   customerName: '田中 花子',
   notes: '',
+  birthday: '',
 };
 
 function reservationReducer(
@@ -40,6 +41,8 @@ function reservationReducer(
       return { ...state, customerName: action.payload };
     case 'SET_NOTES':
       return { ...state, notes: action.payload };
+    case 'SET_BIRTHDAY':
+      return { ...state, birthday: action.payload };
     case 'APPLY_REBOOK_PATCH':
       return {
         ...state,

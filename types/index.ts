@@ -46,6 +46,7 @@ export interface ReservationState {
   selectedTime: string | null; // "09:00"
   customerName: string;
   notes: string;
+  birthday: string; // "MM/DD" 任意
 }
 
 export type ReservationAction =
@@ -58,6 +59,7 @@ export type ReservationAction =
   | { type: 'SET_TIME'; payload: string | null }
   | { type: 'SET_CUSTOMER_NAME'; payload: string }
   | { type: 'SET_NOTES'; payload: string }
+  | { type: 'SET_BIRTHDAY'; payload: string }
   | {
       type: 'APPLY_REBOOK_PATCH';
       payload: {
