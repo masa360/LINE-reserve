@@ -22,16 +22,12 @@ function InfoRow({ icon, text }: { icon: React.ReactNode; text: string }) {
 
 export default function HomePage() {
   const { profile } = useLiff();
-  /** ダミーデータは使わない。取得完了までは null（読み込み中） */
   const [upcomingReservation, setUpcomingReservation] = useState<
-    PastReservation | undefined | null
-  >(null);
-  const [upcomingLoadError, setUpcomingLoadError] = useState(false);
-
+    PastReservation | undefined
+  >(undefined);
   useEffect(() => {
     let alive = true;
     (async () => {
-      setUpcomingLoadError(false);
       const lineUserId = profile?.userId?.trim() ?? '';
       const result = await fetchReservationsFromGas(
         lineUserId
@@ -46,11 +42,11 @@ export default function HomePage() {
       if (!alive) return;
       if (!result.ok) {
         setUpcomingReservation(undefined);
-        setUpcomingLoadError(true);
         return;
       }
+      const todayStr = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
       const upcoming = result.reservations
-        .filter((r) => r.status === 'upcoming')
+        .filter((r) => r.status === 'upcoming' && r.date >= todayStr)
         .sort((a, b) => (a.date + a.time > b.date + b.time ? 1 : -1))[0];
       setUpcomingReservation(upcoming);
     })();
@@ -70,85 +66,43 @@ export default function HomePage() {
       </header>
 
       <div className="px-4 py-5 space-y-4">
-        {/* 次回予約バナー（GAS のみ。ダミー予約は表示しない） */}
-        <Link
-          href={
-            upcomingReservation === null
-              ? '/reservation'
-              : upcomingReservation
-                ? '/history'
-                : '/reservation'
-          }
-        >
-          <div
-            className={`rounded-2xl p-4 border ${
-              upcomingReservation
-                ? 'bg-[#F5E8DD] border-[#E8C9A8]'
-                : 'bg-[#FFFEFB] border-[#E8DDD2]'
-            } flex items-start gap-3`}
-          >
-            <div className="w-11 h-11 rounded-full bg-[#B5714A]/15 flex items-center justify-center flex-shrink-0">
-              <svg
-                className="w-6 h-6 text-[#B5714A]"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.8}
-              >
-                {upcomingReservation ? (
+        {/* 次回予約バナー：当日以降の予約があるときだけ表示 */}
+        {upcomingReservation && (
+          <Link href="/history">
+            <div className="rounded-2xl p-4 border bg-[#F5E8DD] border-[#E8C9A8] flex items-start gap-3">
+              <div className="w-11 h-11 rounded-full bg-[#B5714A]/15 flex items-center justify-center flex-shrink-0">
+                <svg
+                  className="w-6 h-6 text-[#B5714A]"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                >
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5"
                   />
-                ) : (
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 4.5v15m7.5-7.5h-15"
-                  />
-                )}
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-[#B5714A] font-medium">次回のご予約</p>
+                <p className="text-lg font-bold text-[#2C1A0E] mt-1 leading-tight">
+                  {upcomingReservation.date.replace(/-/g, '/')}（{upcomingReservation.time}〜）
+                </p>
+                <p className="text-xs text-[#7A6555] truncate mt-1">
+                  {upcomingReservation.customerName
+                    ? `${upcomingReservation.customerName}様 / `
+                    : ''}
+                  {upcomingReservation.menuName} / {upcomingReservation.staffName}
+                </p>
+              </div>
+              <svg className="w-4 h-4 text-[#B5714A] flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
               </svg>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-[#B5714A] font-medium">
-                {upcomingReservation === null
-                  ? '次回予約を確認中…'
-                  : upcomingReservation
-                    ? '次回のご予約'
-                    : upcomingLoadError
-                      ? '予約情報を読み込めませんでした'
-                      : '予約をしてみませんか'}
-              </p>
-              {upcomingReservation === null ? (
-                <p className="text-sm text-[#7A6555] mt-1 leading-relaxed">
-                  しばらくお待ちください
-                </p>
-              ) : upcomingReservation ? (
-                <>
-                  <p className="text-lg font-bold text-[#2C1A0E] mt-1 leading-tight">
-                    {upcomingReservation.date.replace(/-/g, '/')}（{upcomingReservation.time}〜）
-                  </p>
-                  <p className="text-xs text-[#7A6555] truncate mt-1">
-                    {upcomingReservation.customerName
-                      ? `${upcomingReservation.customerName}様 / `
-                      : ''}
-                    {upcomingReservation.menuName} / {upcomingReservation.staffName}
-                  </p>
-                </>
-              ) : (
-                <p className="text-sm font-bold text-[#2C1A0E] mt-1 leading-tight">
-                  {upcomingLoadError
-                    ? '通信状況を確認のうえ、しばらくしてから開き直してください'
-                    : '空き状況を見て予約できます'}
-                </p>
-              )}
-            </div>
-            <svg className="w-4 h-4 text-[#B5714A] flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
-        </Link>
+          </Link>
+        )}
 
         {/* 店舗情報カード */}
         <div className="bg-[#FFFEFB] rounded-2xl border border-[#E8DDD2] overflow-hidden">
